@@ -98,3 +98,40 @@ test("E2E-001: home → industry/agriculture renders and PainPanel mounts", asyn
     void dumpOnFailure;
   }
 });
+
+// ---- T6:金融业新叙事 + 前端子色阶 + footer source_url ----
+
+test("E2E-004: home 5 industries render with 2024 real values + footer", async ({ page }) => {
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "行业价值流转" })).toBeVisible({ timeout: 15_000 });
+  // footer 含数据来源 + 年度 + 单位
+  const footer = page.getByTestId("data-footer");
+  await expect(footer).toBeVisible({ timeout: 10_000 });
+  await expect(footer).toContainText("国家统计局");
+  await expect(footer).toContainText("2024");
+  await expect(footer).toContainText("亿元");
+});
+
+test("E2E-005: finance detail page shows 资金来源/机构/运用 + 万亿元 footer", async ({ page }) => {
+  await page.goto("/industry/finance", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "金融业" })).toBeVisible({ timeout: 10_000 });
+  const footer = page.getByTestId("industry-footer");
+  await expect(footer).toContainText("万亿元");
+  // 央行 / 人民银行 / 银保监会 / 证监会 任一即可(footer source 含其中之一)
+  await expect(footer).toContainText(/央行|人民银行|银保监会|证监会/);
+  // 详情页 footer 应有 source_url 链接
+  const link = page.getByTestId("source-url-link");
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("href", /pbc\.gov\.cn/);
+});
+
+test("E2E-006: finance page renders with 3-layer (sources/institutions/uses)", async ({ page }) => {
+  // 验证 3 层节点都被渲染:住户存款/企业存款(layer=0),银行/证券/保险(layer=1),贷款/保费/筹资(layer=2)
+  await page.goto("/industry/finance", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "金融业" })).toBeVisible({ timeout: 10_000 });
+  const sankey = page.locator('[data-testid="sankey-svg"]');
+  await expect(sankey).toBeVisible();
+  // 至少有 8 个 rect(9 节点中 consumer 不存在,但实际是 8 source/inst/use 节点)
+  const rects = sankey.locator("rect");
+  expect(await rects.count()).toBeGreaterThanOrEqual(8);
+});

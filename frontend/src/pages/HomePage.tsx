@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { apiClient } from "../api/client";
 import { Sankey } from "../components/Sankey";
 import { Nav } from "../components/Nav";
+import { Footer } from "../components/Footer";
 import type { SankeyData } from "../types/api";
 
 export function HomePage() {
@@ -22,6 +23,7 @@ export function HomePage() {
       <div style={{ padding: 24 }}>
         <h1>行业价值流转</h1>
         <Sankey data={data} onIndustryClick={(id) => navigate(`/industry/${id}`)} />
+        <Footer data={data} testId="data-footer" />
       </div>
     </div>
   );

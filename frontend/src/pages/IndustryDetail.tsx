@@ -4,6 +4,7 @@ import { apiClient } from "../api/client";
 import { MiniSankey } from "../components/MiniSankey";
 import { PainPanel } from "../components/PainPanel";
 import { Nav } from "../components/Nav";
+import { Footer } from "../components/Footer";
 import type { SankeyData } from "../types/api";
 
 export function IndustryDetail() {
@@ -22,6 +23,7 @@ export function IndustryDetail() {
         <div>
           <h1>{data.industries[0].name}</h1>
           <MiniSankey data={data} />
+          <Footer data={data} testId="industry-footer" />
         </div>
         <div>
           <PainPanel industryId={id} />
