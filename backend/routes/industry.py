@@ -9,10 +9,12 @@ from schema.sankey import SankeyData
 router = APIRouter(prefix="/api", tags=["industry"])
 _cache = Cache(get_db_path())
 
+YEAR = 2024
+
 
 @router.get("/industry/{industry_id}", response_model=SankeyData)
 async def get_industry(industry_id: str):
-    key = f"industry:{industry_id}:v1"
+    key = f"stats_gov:industry:{industry_id}:{YEAR}:v2"
     cached = _cache.get(key)
     if cached:
         return cached

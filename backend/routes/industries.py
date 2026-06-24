@@ -9,10 +9,13 @@ from schema.sankey import SankeyData
 router = APIRouter(prefix="/api", tags=["industries"])
 _cache = Cache(get_db_path())
 
+YEAR = 2024  # 本 spec 数据基准
+
 
 @router.get("/industries", response_model=SankeyData)
 async def get_industries():
-    cached = _cache.get("industries:all:v1")
+    key = f"stats_gov:industries:{YEAR}:v2"
+    cached = _cache.get(key)
     if cached:
         return cached
     async with AsyncClient() as client:
@@ -23,5 +26,5 @@ async def get_industries():
             async with AsyncClient() as client2:
                 scraper = IndustryAssociationScraper(client2)
                 data = await scraper.fetch_all()
-    _cache.set("industries:all:v1", data.model_dump())
+    _cache.set(key, data.model_dump())
     return data

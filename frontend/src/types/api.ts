@@ -5,6 +5,10 @@ export type SankeyData = {
   industries: Industry[];
   nodes: ValueFlowNode[];
   edges: ValueFlowEdge[];
+  source?: string | null;       // 新增:数据来源说明
+  source_url?: string | null;   // 新增:原始数据链接
+  year?: number | null;         // 新增:数据年度
+  unit?: string;                // 新增:单位,默认 "亿元"
 };
 export type PainPoint = { title: string; description: string; severity: "low" | "medium" | "high" };
 export type AIHelp = { use_case: string; capability: string; example: string; roi_estimate: string };

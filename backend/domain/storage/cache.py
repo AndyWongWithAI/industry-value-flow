@@ -49,3 +49,20 @@ class Cache:
             cur = conn.execute("DELETE FROM scrape_cache WHERE key = ?", (key,))
             conn.commit()
         return cur.rowcount > 0
+
+    def delete_prefix(self, suffix: str) -> int:
+        """删除所有 key 以 suffix 结尾的行,返回删除行数。
+        用例:启动时 delete_prefix(':v1') 清旧 schema 缓存。
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM scrape_cache WHERE key LIKE ?", (f"%{suffix}",)
+            )
+            conn.commit()
+        return cur.rowcount
+
+    def iter_keys(self):
+        """遍历 (key, data) 元组,测试用。"""
+        with sqlite3.connect(self.db_path) as conn:
+            for row in conn.execute("SELECT key, data FROM scrape_cache"):
+                yield row[0], json.loads(row[1])
