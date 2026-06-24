@@ -1,6 +1,8 @@
 import type { LLMProviderConfig } from "../types/api";
 
-const PROVIDERS: Array<{ key: string; label: string; defaultModel: string; defaultBaseUrl?: string }> = [
+export type ProviderKey = LLMProviderConfig["provider"];
+
+const PROVIDERS: Array<{ key: ProviderKey; label: string; defaultModel: string; defaultBaseUrl?: string }> = [
   { key: "claude", label: "Claude", defaultModel: "claude-sonnet-4-5" },
   { key: "openai", label: "OpenAI", defaultModel: "gpt-4o" },
   { key: "deepseek", label: "DeepSeek", defaultModel: "deepseek-chat" },
