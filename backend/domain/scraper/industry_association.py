@@ -22,6 +22,21 @@ _MED_SEGMENTS_2024 = [
 
 _MED_SOURCE_URL = "http://www.nhc.gov.cn/guihuaxxs/s3585u/2024.htm"
 
+# 教育 8 学段 2024 在校生数(单位:万人)
+# 数据来源:教育部《2024 年全国教育事业发展统计公报》
+_EDU_SEGMENTS_2024 = [
+    ("edu_preschool", "学前教育", 4803.0),
+    ("edu_primary", "小学", 10584.0),
+    ("edu_junior", "初中", 5243.0),
+    ("edu_senior", "普通高中", 2803.0),
+    ("edu_voc_junior", "中等职业教育", 1298.0),
+    ("edu_voc_senior", "高职专科", 1770.0),
+    ("edu_undergrad", "普通本科", 2478.0),
+    ("edu_grad", "研究生", 388.0),
+]
+
+_EDU_SOURCE_URL = "http://www.moe.gov.cn/jyb_sjzl/sjzl_fztjgb/"
+
 
 class IndustryAssociationScraper:
     """Fallback scraper: 返回硬编码的 5 行业骨架,颜色统一为 #888888 标识 fallback 数据。"""
@@ -32,6 +47,8 @@ class IndustryAssociationScraper:
     async def fetch(self, industry_id: str) -> SankeyData:
         if industry_id not in VALID_INDUSTRY_IDS:
             raise ValueError(f"unknown industry: {industry_id}")
+        if industry_id == "education":
+            return self._build_education()
         if industry_id == "healthcare":
             return self._build_healthcare()
         return await self.fetch_all()  # fallback:全量数据中过滤
@@ -86,4 +103,33 @@ class IndustryAssociationScraper:
             source_url=_MED_SOURCE_URL,
             year=2024,
             unit="万个",
+        )
+
+    def _build_education(self) -> SankeyData:
+        industries = [Industry(id="education", name="教育业", color="#ffd700")]
+        nodes = [
+            ValueFlowNode(id=nid, label=label, layer=0)
+            for nid, label, _ in _EDU_SEGMENTS_2024
+        ] + [
+            ValueFlowNode(id="edu_total", label="教育合计", layer=1),
+            ValueFlowNode(id="workforce", label="毕业生流向", layer=2),
+        ]
+        edges = [
+            ValueFlowEdge(source=nid, target="edu_total", value=value)
+            for nid, _, value in _EDU_SEGMENTS_2024
+        ] + [
+            ValueFlowEdge(
+                source="edu_total",
+                target="workforce",
+                value=sum(v for _, _, v in _EDU_SEGMENTS_2024),
+            ),
+        ]
+        return SankeyData(
+            industries=industries,
+            nodes=nodes,
+            edges=edges,
+            source="教育部 2024 年全国教育事业发展统计公报",
+            source_url=_EDU_SOURCE_URL,
+            year=2024,
+            unit="万人",
         )
