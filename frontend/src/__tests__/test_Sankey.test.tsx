@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
+// @vitest-environment jsdom
+import { expect, describe, it } from "vitest";
 import { render, screen } from "@testing-library/react";
+import * as matchers from "@testing-library/jest-dom/matchers";
 import { Sankey } from "../components/Sankey";
 import type { SankeyData } from "../types/api";
+
+expect.extend(matchers);
 
 const mockData: SankeyData = {
   industries: [
