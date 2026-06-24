@@ -23,4 +23,8 @@ dist/
 .superpowers/
 
 # Test coverage reports
-.coveragetest-results/
+.coverage
+backend/.coverage
+test-results/
+playwright-report/
+playwright/.cache/
