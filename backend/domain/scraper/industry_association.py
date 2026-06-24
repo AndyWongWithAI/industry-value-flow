@@ -37,6 +37,27 @@ _EDU_SEGMENTS_2024 = [
 
 _EDU_SOURCE_URL = "http://www.moe.gov.cn/jyb_sjzl/sjzl_fztjgb/"
 
+# ---- T6:金融业新叙事(资金来源 → 金融机构 → 资金运用) ----
+
+# 金融 3 层 9 节点 2024 真实值(单位:万亿元)
+# 数据来源:中国人民银行 + 国家金融监督管理总局 + 中国证监会
+_FIN_SOURCE = [
+    ("fin_src_household_dep", "住户存款", 152.3),    # 央行《社融存量》
+    ("fin_src_corp_dep", "企业存款", 78.2),          # 央行
+]
+_FIN_INSTITUTION = [
+    ("fin_inst_bank", "银行业金融机构", 372.0),      # 银保监会 总资产
+    ("fin_inst_sec", "证券业", 13.5),                # 证监会 总资产
+    ("fin_inst_ins", "保险业", 33.3),                # 银保监会 总资产
+]
+_FIN_USAGE = [
+    ("fin_use_loan", "各项贷款", 258.4),             # 央行
+    ("fin_use_premium", "保费收入", 5.7),            # 银保监会
+    ("fin_use_raised", "证券承销筹资", 4.5),         # 证监会 2024 IPO+增发
+]
+
+# 资金来源与运用总额不一致(来源 230.5,运用 268.6)→ 接受(R6 风险:跨口径不一致,UI footer 标注)
+
 
 class IndustryAssociationScraper:
     """Fallback scraper: 返回硬编码的 5 行业骨架,颜色统一为 #888888 标识 fallback 数据。"""
@@ -51,6 +72,8 @@ class IndustryAssociationScraper:
             return self._build_education()
         if industry_id == "healthcare":
             return self._build_healthcare()
+        if industry_id == "finance":
+            return self._build_finance()
         return await self.fetch_all()  # fallback:全量数据中过滤
 
     async def fetch_all(self) -> SankeyData:
@@ -132,4 +155,45 @@ class IndustryAssociationScraper:
             source_url=_EDU_SOURCE_URL,
             year=2024,
             unit="万人",
+        )
+
+    def _build_finance(self) -> SankeyData:
+        """金融业新叙事:资金来源 → 金融机构 → 资金运用(3 层 9 节点,万亿元)。"""
+        industries = [Industry(id="finance", name="金融业", color="#50c878")]
+        nodes = []
+        edges = []
+
+        # layer 0: 资金来源
+        for nid, label, _ in _FIN_SOURCE:
+            nodes.append(ValueFlowNode(id=nid, label=label, layer=0))
+        # layer 1: 金融机构
+        for nid, label, _ in _FIN_INSTITUTION:
+            nodes.append(ValueFlowNode(id=nid, label=label, layer=1))
+        # layer 2: 资金运用
+        for nid, label, _ in _FIN_USAGE:
+            nodes.append(ValueFlowNode(id=nid, label=label, layer=2))
+
+        # edges: 来源 → 机构(按机构资产比例分配)
+        total_inst = sum(v for _, _, v in _FIN_INSTITUTION)
+        for sid, _, sv in _FIN_SOURCE:
+            for iid, _, iv in _FIN_INSTITUTION:
+                edges.append(
+                    ValueFlowEdge(source=sid, target=iid, value=sv * iv / total_inst)
+                )
+
+        # edges: 机构 → 运用(按机构资产比例分配到三类运用)
+        for iid, _, iv in _FIN_INSTITUTION:
+            for uid, _, uv in _FIN_USAGE:
+                edges.append(
+                    ValueFlowEdge(source=iid, target=uid, value=iv * uv / total_inst)
+                )
+
+        return SankeyData(
+            industries=industries,
+            nodes=nodes,
+            edges=edges,
+            source="中国人民银行/国家金融监督管理总局/证监会 2024 年公报",
+            source_url="https://www.pbc.gov.cn/",
+            year=2024,
+            unit="万亿元",
         )
