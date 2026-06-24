@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
+import { MemoryRouter } from "react-router-dom";
 import { Settings } from "../pages/Settings";
 
 expect.extend(matchers);
@@ -16,7 +17,12 @@ describe("Settings", () => {
         daily_token_budget: 100000,
       }),
     });
-    render(<Settings />);
+    // Nav uses useLocation → must be inside a Router.
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
     await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument());
   });
 });

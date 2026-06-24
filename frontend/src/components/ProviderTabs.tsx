@@ -4,7 +4,7 @@ const PROVIDERS: Array<{ key: string; label: string; defaultModel: string; defau
   { key: "claude", label: "Claude", defaultModel: "claude-sonnet-4-5" },
   { key: "openai", label: "OpenAI", defaultModel: "gpt-4o" },
   { key: "deepseek", label: "DeepSeek", defaultModel: "deepseek-chat" },
-  { key: "minimax", label: "MiniMax", defaultModel: "MiniMax-Text-01" },
+  { key: "minimax", label: "MiniMax", defaultModel: "MiniMax-M3" },
   { key: "ollama", label: "Ollama(本地)", defaultModel: "llama3", defaultBaseUrl: "http://localhost:11434/v1" },
 ];
 
