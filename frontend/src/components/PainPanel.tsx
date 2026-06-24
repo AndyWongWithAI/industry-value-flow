@@ -11,13 +11,13 @@ export function PainPanel({ industryId }: { industryId: string }) {
     apiClient.generateLLM(industryId).then(setData).finally(() => setLoading(false));
   }, [industryId]);
 
-  if (loading) return <div>加载痛点中...</div>;
-  if (!data) return <div>暂无数据</div>;
+  if (loading) return <div data-testid="pain-panel">加载痛点中...</div>;
+  if (!data) return <div data-testid="pain-panel">暂无数据</div>;
   if (data.status === "degraded") {
-    return <div style={{ color: "#888" }}>AI 分析暂不可用,Sankey 数据正常</div>;
+    return <div data-testid="pain-panel" style={{ color: "#888" }}>AI 分析暂不可用,Sankey 数据正常</div>;
   }
   return (
-    <div>
+    <div data-testid="pain-panel">
       <h3>痛点</h3>
       <ul>
         {data.pain_points.map((p, i) => (

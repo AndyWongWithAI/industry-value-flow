@@ -1,32 +1,57 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, request } from "@playwright/test";
 
-// Acceptance E2E-001: core flow home → industry → pain points.
+// E2E-001: core flow — home renders, sector click navigates, detail page loads.
 //
-// Degradation: this test is designed to pass even when the LLM provider is
-// not configured (e.g. CI without API keys). In that case the backend returns
-// `status="degraded"` and the frontend shows the empty state instead of
-// navigating to /industry/{id}. The strict assertions (title + sankey svg)
-// still hold; the navigation step uses a best-effort click + long-timeout
-// waitForURL so a real failure (broken navigation, 500, etc.) is still loud.
-test("core flow: home → industry → pain points", async ({ page }) => {
+// Design principles:
+// - LLM-dependent UI (PainPanel) is allowed to be in any of these states:
+//     loading ("加载痛点中...") / degraded ("AI 分析暂不可用") / with data
+//   The point of E2E is to verify the wiring, not the LLM output.
+// - Every other claim is a strict assertion — broken backend, broken routing,
+//   broken Sankey rendering, or a missing Nav will fail the test loudly.
+// - No `.catch(() => {})` test-theatre: a swallowed failure cannot distinguish
+//   a real bug from a degraded LLM.
+//
+// CI requirement: backend + frontend must be running before this test runs.
+// In CI, `playwright.config.ts` starts them via `webServer`. Locally, the
+// developer typically runs them by hand and Playwright reuses the existing
+// servers (`reuseExistingServer: true`).
+
+test("E2E-001: home → industry/agriculture renders and PainPanel mounts", async ({ page }) => {
+  // Pre-flight: backend reachable. This catches "backend not started" early,
+  // before Playwright wastes time loading a broken frontend.
+  const ctx = await request.newContext({ baseURL: "http://localhost:8000" });
+  const apiResp = await ctx.get("/api/industries");
+  expect(apiResp.ok(), `backend /api/industries must return 2xx, got ${apiResp.status()}`).toBeTruthy();
+  await ctx.dispose();
+
+  // 1. Home renders.
   await page.goto("/");
-  // Strict assertions — title and sankey must always render
-  await expect(page.getByText("行业价值流转")).toBeVisible();
-  await expect(page.locator("[data-testid='sankey-svg']")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "行业价值流转" })).toBeVisible();
+  await expect(page.locator('[data-testid="sankey-svg"]')).toBeVisible();
+  // Nav should be present (new addition — confirms the recent refactor didn't
+  // regress the top navigation).
+  await expect(page.getByRole("link", { name: "首页" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "LLM 设置" })).toBeVisible();
 
-  // Best-effort click on a sector. If click fails we log but continue
-  // (degraded mode is acceptable per E2E-002).
-  try {
-    await page.getByText("金融").first().click();
-  } catch (e) {
-    console.log(`[E2E-001] sector click skipped (degraded mode?): ${e}`);
-  }
+  // 2. Click on the first sector (农业). The Sankey renders <rect> elements
+  //    with click handlers attached via D3. The first node is agriculture_root.
+  const firstSector = page.locator('[data-testid="sankey-svg"] rect').first();
+  await expect(firstSector).toBeVisible();
+  await firstSector.click();
 
-  // Wait for navigation with a generous timeout. If LLM is not configured the
-  // backend will return degraded and no nav will occur; this is acceptable.
-  try {
-    await page.waitForURL(/\/industry\//, { timeout: 10000 });
-  } catch {
-    // Degraded mode: LLM not configured, no navigation. Test still passes.
-  }
+  // 3. Navigation must happen — broken routing is a real bug, not "degraded mode".
+  await page.waitForURL(/\/industry\/agriculture/, { timeout: 5_000 });
+  expect(page.url()).toMatch(/\/industry\/agriculture$/);
+
+  // 4. Industry detail page renders.
+  await expect(page.getByRole("heading", { name: "农业" })).toBeVisible();
+  await expect(page.locator('[data-testid="sankey-svg"]')).toBeVisible();
+
+  // 5. PainPanel mounts. Allowed states: loading / degraded / with-data.
+  //    "加载痛点中..." OR "AI 分析暂不可用" OR an <h3>痛点</h3> heading.
+  //    Whichever shows up, the panel must be present — empty page is a bug.
+  const painPanelRegion = page.getByTestId("pain-panel").or(
+    page.locator("text=/加载痛点中|AI 分析暂不可用|^痛点$/")
+  );
+  await expect(painPanelRegion.first()).toBeVisible({ timeout: 10_000 });
 });
