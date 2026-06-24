@@ -1,0 +1,32 @@
+{
+  "name": "industry-value-flow-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "d3": "^7.9.0",
+    "d3-sankey": "^0.12.3"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "@types/d3-sankey": "^0.12.4",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@playwright/test": "^1.49.0"
+  }
+}

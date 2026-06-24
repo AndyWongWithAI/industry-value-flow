@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+*.db
+*.db-journal
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Settings (含 API key)
+.config/
+
+# OS
+.DS_Store
+
+# Tooling state (not part of project)
+.sdd/
+.superpowers/
