@@ -25,9 +25,12 @@ test("E2E-001: home → industry/agriculture renders and PainPanel mounts", asyn
   await ctx.dispose();
 
   // 1. Home renders.
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "行业价值流转" })).toBeVisible();
-  await expect(page.locator('[data-testid="sankey-svg"]')).toBeVisible();
+  // `waitUntil: "networkidle"` waits for the /api/industries fetch to finish
+  // before the React app can swap "加载中..." for the real h1. CI cold starts
+  // push the first paint past the default 5s, so use a longer timeout.
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "行业价值流转" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-testid="sankey-svg"]')).toBeVisible({ timeout: 15_000 });
   // Nav should be present (new addition — confirms the recent refactor didn't
   // regress the top navigation).
   await expect(page.getByRole("link", { name: "首页" })).toBeVisible();
