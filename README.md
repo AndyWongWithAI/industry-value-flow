@@ -1,6 +1,21 @@
 # 行业价值流转可视化平台
 
-本地个人使用,详见 `docs/superpowers/specs/2026-06-24-行业价值流转可视化平台-design.md`。
+[![CI](https://github.com/AndyWongWithAI/industry-value-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyWongWithAI/industry-value-flow/actions/workflows/ci.yml)
+
+本地个人使用,详见 `docs/superpowers/specs/2026-06-24-行业价值流转可视化平台-design.md`(原始 spec)和 `docs/superpowers/specs/2026-06-25-接入真实数据-design.md`(数据接入)。
+
+## 数据来源
+
+5 行业全部接真实数据(2024),桑基图 footer 标数据来源与年份。
+
+| 行业 | 口径 | 单位 | 来源 |
+|---|---|---|---|
+| 农业 / 制造业 | 分行业 GDP 增加值 | 亿元 | 国家统计局 |
+| 教育 | 在校生数 | 万人 | 教育部统计公报 |
+| 医疗 | 机构数 | 万个 | 卫健委统计公报 |
+| 金融 | 资金存量 | 万亿元 | 央行 / 银保监会 / 证监会 |
+
+数据获取策略:公报硬编码为主(`backend/domain/scraper/industry_association.py`),cn-stats 包为辅,网络不通时自动 fallback。
 
 ## 启动
 
@@ -53,3 +68,6 @@ docs/        设计 + 实施计划
 - [ ] 单元测试覆盖率 > 80%
 - [ ] Integration + E2E 通过
 - [ ] 资产在 arch 平台登记(4 个)
+- [ ] **5 行业桑基图用真实数据(2024)**
+- [ ] **金融业呈现"资金来源 → 机构 → 运用"3 层桑基**
+- [ ] **Footer 显示数据来源与年份,source_url 可点击**
