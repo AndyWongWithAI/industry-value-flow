@@ -52,7 +52,14 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: "npm run dev -- --host 0.0.0.0 --port 5173",
+      // Invoke vite directly via node + the project-root binary instead of
+      // `npm run dev`. Locally reproduced: `npm run dev` from frontend/
+      // starts vite but vite returns 404 for `/` (vite reports "ready" but
+      // can't find index.html — symptom of an npm-spawned subprocess not
+      // resolving the project root the same way). `node ../node_modules/.bin/vite`
+      // from frontend/ serves the page correctly.
+      command:
+        "node ../node_modules/.bin/vite --host 0.0.0.0 --port 5173",
       cwd: ".",
       port: 5173,
       reuseExistingServer: !process.env.CI,
