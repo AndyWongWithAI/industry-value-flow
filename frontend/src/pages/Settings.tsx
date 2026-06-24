@@ -18,9 +18,10 @@ export function Settings() {
 
   const ensureConfig = (key: string): LLMProviderConfig => {
     if (s.providers[key]) return s.providers[key];
-    const def = PROVIDERS.find((p) => p.key === key)!;
+    const def = PROVIDERS.find((p) => p.key === key);
+    if (!def) throw new Error(`unknown provider: ${key}`);
     return {
-      provider: key as any,
+      provider: def.key,
       api_key: "",
       base_url: def.defaultBaseUrl ?? null,
       model: def.defaultModel,

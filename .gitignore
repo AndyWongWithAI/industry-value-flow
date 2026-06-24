@@ -21,3 +21,6 @@ dist/
 # Tooling state (not part of project)
 .sdd/
 .superpowers/
+
+# Test coverage reports
+.coveragetest-results/

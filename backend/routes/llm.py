@@ -12,7 +12,6 @@ from domain.llm_coalescer import LLMCoalescer
 from domain.prompt_builder import build_pain_point_prompt
 from domain.rate_limiter import RateLimiter
 from domain.scraper.stats_gov import StatsGovScraper
-from domain.storage.cache import Cache
 from domain.storage.llm_cache import LLMCache
 from domain.token_budget import TokenBudget
 from schema.industry import VALID_INDUSTRY_IDS
@@ -23,7 +22,6 @@ _coalescer = LLMCoalescer()
 _rate_limiter = RateLimiter(max_per_minute=10)
 _budget = TokenBudget()
 _llm_cache = LLMCache(get_db_path())
-_scrape_cache = Cache(get_db_path())
 
 
 class GenerateRequest(BaseModel):

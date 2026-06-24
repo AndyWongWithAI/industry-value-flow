@@ -1,7 +1,6 @@
-import json
 import os
 from pathlib import Path
-from schema.settings import Settings, LLMProviderConfig
+from schema.settings import Settings
 
 CONFIG_DIR = Path(os.environ.get("IVF_CONFIG_DIR", Path.home() / ".config" / "industry-value-flow"))
 CONFIG_FILE = CONFIG_DIR / "settings.json"
