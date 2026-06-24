@@ -38,7 +38,12 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "cd .. && source .venv/bin/activate && uvicorn main:app --port 8000",
+      // Playwright invokes this command via /bin/sh, which lacks bash's
+      // `source` builtin. Use `bash -c` and source the venv only if it
+      // exists, so the same command works locally (venv) and in CI
+      // (uvicorn in PATH from `pip install -e .`).
+      command:
+        "cd .. && bash -c '[ -f .venv/bin/activate ] && . .venv/bin/activate; uvicorn main:app --port 8000'",
       cwd: ".",
       port: 8000,
       reuseExistingServer: !process.env.CI,
