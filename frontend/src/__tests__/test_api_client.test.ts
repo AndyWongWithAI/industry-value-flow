@@ -34,4 +34,24 @@ describe("apiClient", () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "boom" });
     await expect(apiClient.getIndustries()).rejects.toThrow(/failed: 500/);
   });
+
+  it("getIndustries includes source/year/unit/source_url fields", async () => {
+    const mock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        industries: [],
+        nodes: [],
+        edges: [],
+        source: "国家统计局 2024",
+        source_url: "https://x",
+        year: 2024,
+        unit: "亿元",
+      }),
+    });
+    global.fetch = mock;
+    const data = await apiClient.getIndustries();
+    expect(data.year).toBe(2024);
+    expect(data.unit).toBe("亿元");
+    expect(data.source).toContain("国家统计局");
+  });
 });
