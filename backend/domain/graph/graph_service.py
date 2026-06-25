@@ -369,6 +369,10 @@ class GraphService:
         v3(2026-06-25):不再逐 code 调 LLM。生产默认走 category 分批
         路径(完整 96 节点);legacy 路径(逐 code)仅在显式设置
         ``node_codes`` 时使用(单元测试用)。
+
+        v4(2026-06-25):边也走 category 分批路径(每个 source 大类一次),
+        通过 `_generate_edges_by_category` 实现。`_generate_edge`
+        (per-edge) 仍保留给 `regenerate_failed` 重跑 single failed edge 用。
         """
         nodes: list[GraphNode] = []
         edges: list[GraphEdge] = []
@@ -396,22 +400,8 @@ class GraphService:
             # v3 category 分批路径 — 生产默认,完整 96 节点
             nodes = await self._generate_nodes_by_category()
 
-        # 2) 边:基于已生成(generated + failed 都算"已知")节点对
-        # T3 MVP:成对生成(n*(n-1)/2 太慢;我们选相邻的"价值链"对)
-        edge_pairs = _build_default_edge_pairs([n.id for n in nodes])
-        for src, tgt in edge_pairs:
-            try:
-                edge = await self._generate_edge(src, tgt)
-            except LLMUnavailableError:
-                raise
-            except TransientLLMError as e:
-                logger.warning("edge %s->%s transient failure: %s", src, tgt, e)
-                edge = _make_failed_edge(src, tgt, str(e))
-            except Exception as e:
-                logger.warning("edge %s->%s generation failed: %s", src, tgt, e)
-                edge = _make_failed_edge(src, tgt, str(e))
-            self.storage.upsert_edge(edge)
-            edges.append(edge)
+        # 2) 边:v4 按 source 大类分批调 LLM,每类一个 call
+        edges = await self._generate_edges_by_category(nodes)
 
         return KnowledgeGraph(
             nodes=nodes,
@@ -419,6 +409,206 @@ class GraphService:
             generated_at=datetime.now(timezone.utc),
             llm_config_hash=config_hash,
         )
+
+    async def _generate_edges_by_category(
+        self, nodes: list[GraphNode], on_progress: Any | None = None
+    ) -> list[GraphEdge]:
+        """按 source 大类并行调 LLM 生成边,每类一个 call.
+
+        v4 (2026-06-25):取代 T3 MVP 时代硬编码 `_build_default_edge_pairs[:12]`。
+        每个 source 大类触发一次 LLM call,LLM 在 prompt 中被要求给该类下每个
+        节点 3-5 邻接边(允许 target 跨所有类别)。
+
+        校验:
+        - source/target 必须在传入 nodes 列表中(避免 LLM 引用未生成节点)
+        - 禁止自环(source == target 拒收)
+        - weight 必须在 1-5 整数范围内
+        - 重复边去重(第一个赢 + log warning)
+
+        partial failure 处理:
+        - 某类 LLM call 抛异常 -> 该类所有 source 节点的边 = 0
+          (不持久化任何"category failed" 边,只 log warning)
+        - LLM 整体不可用 -> 抛 LLMUnavailableError(由 _call_llm_with_retry 触发)
+
+        Returns:
+            所有持久化的 GraphEdge(只包含成功生成的)。
+        """
+        node_ids: set[str] = {n.id for n in nodes}
+        # 按 source 大类分组 nodes
+        nodes_by_cat: dict[str, list[GraphNode]] = {}
+        for n in nodes:
+            nodes_by_cat.setdefault(n.category.value, []).append(n)
+        # 只对实际有节点的 category 调 LLM(防御:可能 nodes 为空)
+        categories = [
+            (cat, _GBT4754_CATEGORY_NAMES.get(cat, cat))
+            for cat in sorted(nodes_by_cat.keys())
+        ]
+        if not categories:
+            return []
+        # 并行调每个 source cat 的 LLM
+        results = await asyncio.gather(
+            *[
+                self._llm_generate_category_edges(
+                    cat, cat_name, nodes_by_cat[cat], node_ids
+                )
+                for cat, cat_name in categories
+            ],
+            return_exceptions=True,
+        )
+        all_edges: list[GraphEdge] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        progress_gen = 0
+        progress_fail = 0
+        total_cats = len(categories)
+        for (cat, _cat_name), res in zip(categories, results, strict=True):
+            if isinstance(res, Exception):
+                # 整个 category call 抛异常:该类所有 source 节点的边都不生成
+                logger.warning(
+                    "edge category %s batch failed: %s", cat, res
+                )
+                progress_fail += 1
+                if on_progress is not None:
+                    try:
+                        on_progress(progress_gen, progress_fail, total_cats)
+                    except Exception as e:  # pragma: no cover
+                        logger.warning("on_progress callback raised: %s", e)
+                continue
+            # res 是 list[GraphEdge] (该类下生成的边)
+            for edge in res:
+                pair = (edge.source, edge.target)
+                if pair in seen_pairs:
+                    # 跨类的 LLM 可能重复;只保留第一个
+                    logger.warning(
+                        "duplicate edge %s->%s dropped (kept first)",
+                        edge.source, edge.target,
+                    )
+                    continue
+                seen_pairs.add(pair)
+                self.storage.upsert_edge(edge)
+                all_edges.append(edge)
+                progress_gen += 1
+            if on_progress is not None:
+                try:
+                    on_progress(progress_gen, progress_fail, total_cats)
+                except Exception as e:  # pragma: no cover
+                    logger.warning("on_progress callback raised: %s", e)
+        return all_edges
+
+    async def _llm_generate_category_edges(
+        self,
+        cat: str,
+        cat_name: str,
+        cat_nodes: list[GraphNode],
+        all_node_ids: set[str],
+    ) -> list[GraphEdge]:
+        """单次 LLM call:返回该大类作为 source 时的所有邻接边.
+
+        LLM prompt 要求每个 source 节点给 3-5 个 target(允许跨所有类别)。
+        校验 + 拒收:
+        - source 不在 cat_nodes 里(LLM 幻觉) -> 拒
+        - target 不在 all_node_ids 里 -> 拒(避免引用未生成节点)
+        - self-loop (source == target) -> 拒
+        - weight 不在 1-5 -> 拒
+        - 解释为空 -> 拒(避免空解释)
+
+        Returns:
+            list[GraphEdge],所有通过校验的边。
+            解析错误时返空 list(由上层 gather 处理;不抛异常到 partial failure 层)。
+        """
+        prompt = _build_edge_category_prompt(cat, cat_name, cat_nodes)
+        items: list[dict[str, Any]] = []
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                raw = await self._call_llm_with_retry(prompt)
+                parsed = _parse_json_strict(raw)
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        f"expected JSON array, got {type(parsed).__name__}"
+                    )
+                items = parsed
+                break
+            except (json.JSONDecodeError, ValueError, LLMUnavailableError):
+                # LLMUnavailableError 必须重抛(整体不可用)
+                raise
+            except Exception as e:
+                # JSON 解析错误等其他可重试错误
+                last_exc = e
+                logger.warning(
+                    "edge category %s parse attempt %d failed: %s",
+                    cat, attempt + 1, e,
+                )
+        if not items and last_exc is not None:
+            # 2 次都失败:返空 list(上层视为该类 failed)
+            logger.warning(
+                "edge category %s parse failed 2x: %s", cat, last_exc
+            )
+            return []
+        cat_node_ids = {n.id for n in cat_nodes}
+        edges: list[GraphEdge] = []
+        for it in items:
+            try:
+                source = str(it.get("source", ""))
+                target = str(it.get("target", ""))
+                weight_raw = it.get("weight", 0)
+                explanation = str(it.get("explanation", ""))
+            except (AttributeError, TypeError) as e:
+                logger.warning(
+                    "edge category %s item shape error: %s", cat, e
+                )
+                continue
+            # 校验
+            if not source or not target:
+                continue
+            if source not in cat_node_ids:
+                # LLM 幻觉:source 不在该类下
+                logger.warning(
+                    "edge category %s: source %r not in cat nodes",
+                    cat, source,
+                )
+                continue
+            if source == target:
+                # 自环
+                logger.warning(
+                    "edge category %s: self-loop %s->%s rejected",
+                    cat, source, target,
+                )
+                continue
+            if target not in all_node_ids:
+                # target 不在传入的 nodes 列表(可能未生成)
+                logger.warning(
+                    "edge category %s: target %r not in nodes list",
+                    cat, target,
+                )
+                continue
+            try:
+                weight = int(weight_raw)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "edge category %s: weight %r not int", cat, weight_raw
+                )
+                continue
+            if not (1 <= weight <= 5):
+                logger.warning(
+                    "edge category %s: weight %d out of [1,5]",
+                    cat, weight,
+                )
+                continue
+            if not explanation.strip():
+                # 空解释拒收(避免无意义边)
+                continue
+            edges.append(
+                GraphEdge(
+                    source=source,
+                    target=target,
+                    relation_type=RelationType.supports,
+                    weight=weight,
+                    explanation=explanation.strip(),
+                    status=NodeStatus.generated,
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+            )
+        return edges
 
     async def _generate_node(self, code: str) -> GraphNode:
         """LLM 生成单个节点(NodeStatus=generated / failed)."""
@@ -668,17 +858,54 @@ def _parse_json_strict(text: str) -> dict:
 
 
 def _build_default_edge_pairs(node_ids: list[str]) -> list[tuple[str, str]]:
-    """构造有代表性的"价值链"边对(避免 n*(n-1)/2 过载).
+    """T3 MVP 时代的硬编码 edge_pairs 截断(已废弃).
 
-    T3 MVP:相邻下标的节点配对(去重 + 去自环).
+    v4 (2026-06-25):边生成改走 `_generate_edges_by_category` —
+    每个 source 大类调一次 LLM,LLM 决定每个节点的邻接关系。
+    此函数保留仅为旧测试兼容性,新代码不要再用。
     """
     pairs: list[tuple[str, str]] = []
     for i in range(len(node_ids)):
         for j in range(i + 1, len(node_ids)):
             pairs.append((node_ids[i], node_ids[j]))
-    # 截断到前 N 对,避免 n*(n-1)/2 过大
-    # 11 节点 -> 55 对,MVP 截到 12 对
     return pairs[:12]
+
+
+def _build_edge_category_prompt(
+    cat: str, cat_name: str, cat_nodes: list[GraphNode]
+) -> str:
+    """构造按 source 大类生成边的 LLM prompt.
+
+    要求 LLM:
+    - 为每个 source 节点列出 3-5 个最强支撑的目标行业
+    - target 跨所有类别(不限同一大类)
+    - 输出严格 JSON 数组,字段:source/target/weight/explanation
+    """
+    nodes_payload = [
+        {"code": n.id, "name": n.label, "description": n.description}
+        for n in cat_nodes
+    ]
+    return (
+        f"以下是 GB/T 4754-2017 国民经济行业分类中,"
+        f"【{cat_name} ({cat})】大类下的所有中类节点:\n\n"
+        f"{json.dumps(nodes_payload, ensure_ascii=False, indent=2)}\n\n"
+        f"请为每个节点列出它最强支撑的 3-5 个其他行业"
+        f"(目标 code + weight 1-5 + 一句话解释)。\n\n"
+        f"A → B 表示 A 支撑 B(A 是 B 的上游,资源/服务/技术流向)。\n\n"
+        f"输出严格 JSON 数组(无其他文字):\n"
+        f"[\n"
+        f'  {{"source": "A01", "target": "B06", "weight": 4, '
+        f'"explanation": "农业为采矿业提供粮食等基础保障"}},\n'
+        f"  ...\n"
+        f"]\n\n"
+        f"要求:\n"
+        f"- 每个 source 节点 3-5 条边,不能多不能少\n"
+        f"- target 必须是 GB/T 4754 有效中类 code,可以是任意大类\n"
+        f"- weight 1-5 整数(1=弱支撑,5=强支撑)\n"
+        f"- explanation 一句话,20-50 字\n"
+        f"- 不要自环(source 不能等于 target)\n"
+        f"- 只输出 JSON,不要前言/后语"
+    )
 
 
 # GB/T 4754-2017 大类名称(20 大类) — 用于 LLM prompt
