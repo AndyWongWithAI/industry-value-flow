@@ -1105,3 +1105,76 @@ class TestGenerateNodesByCategory:
             stored = service.storage.get_node(n.id)
             assert stored is not None
             assert stored.status == NodeStatus.generated
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_in_category_batch(
+        self, service, llm_client
+    ):
+        """某 category 的 LLM call 抛异常 -> 其他 19 类正常 generated,该类全 failed."""
+        import re
+        target_cat = "E"  # 建筑业 — 4 个中类
+
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    if cat == target_cat:
+                        raise RuntimeError(
+                            f"simulated LLM error for cat {cat}"
+                        )
+                    return _fake_category_payload(cat, count=5)
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        nodes = await service._generate_nodes_by_category()
+
+        # 至少有一些 generated
+        gen = [n for n in nodes if n.status == NodeStatus.generated]
+        fail = [n for n in nodes if n.status == NodeStatus.failed]
+        assert len(gen) > 0
+        assert len(fail) > 0
+        # failed 的全是 E 类
+        failed_cats = {n.category.value for n in fail}
+        assert failed_cats == {target_cat}, (
+            f"expected only {target_cat} failed, got {failed_cats}"
+        )
+        # 4 个 E 类中类全 failed
+        assert len(fail) == 4
+        # generated 包含 19 类的节点
+        gen_cats = {n.category.value for n in gen}
+        assert target_cat not in gen_cats
+        assert len(gen_cats) == 19
+
+    @pytest.mark.asyncio
+    async def test_progress_callback_called(
+        self, service, llm_client
+    ):
+        """on_progress callback 在每个 node 持久化后被调,最终值正确."""
+        import re
+        progress_calls: list[tuple[int, int, int]] = []
+
+        def on_progress(generated: int, failed: int, total: int) -> None:
+            progress_calls.append((generated, failed, total))
+
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    return _fake_category_payload(m.group(1), count=5)
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        await service._generate_nodes_by_category(on_progress=on_progress)
+
+        # 至少调了 1 次(20 类,每类后调 1 次)
+        assert len(progress_calls) >= 1
+        # 最终 total 应该是 20 (20 大类)
+        last = progress_calls[-1]
+        assert last[2] == 20
+        # 最终 generated+failed 应等于总节点数
+        assert last[0] + last[1] >= 60
