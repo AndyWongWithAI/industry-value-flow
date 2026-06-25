@@ -2,92 +2,20 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
-import { GraphView } from "../components/GraphView";
-import { GraphNode } from "../components/GraphNode";
 import { Tooltip } from "../components/Tooltip";
-import type { KnowledgeGraph } from "../types/api";
 import { readTokensCss } from "../styles/tokens-content";
 
 expect.extend(matchers);
 
-class ResizeObserverMock {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-(globalThis as unknown as { ResizeObserver: typeof ResizeObserverMock }).ResizeObserver =
-  ResizeObserverMock;
-if (!Element.prototype.getBoundingClientRect) {
-  Element.prototype.getBoundingClientRect = function () {
-    return {
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      right: 100,
-      bottom: 100,
-      width: 100,
-      height: 100,
-      toJSON() {
-        return this;
-      },
-    } as DOMRect;
-  };
-}
-
 afterEach(() => cleanup());
 
-describe("failed node hover tooltip(T6 §6.8 #7)", () => {
-  it("失败节点 GraphNode 在原生 title 里包含 failed_reason", () => {
-    // 验证 T5 的现有实现(GraphNode 自身有 title 属性作为最简 tooltip)
-    const graph: KnowledgeGraph = {
-      nodes: [
-        {
-          id: "B06",
-          label: "煤炭",
-          category: "B",
-          description: "煤炭",
-          status: "failed",
-          failed_reason: "模型返回 502",
-          last_attempt_at: null,
-        },
-      ],
-      edges: [],
-      generated_at: "",
-      llm_config_hash: "",
-      schema_version: "v1",
-    };
-    render(<GraphView graph={graph} />);
-    const node = screen.getByTestId("graph-node-煤炭");
-    const title = node.getAttribute("title") || "";
-    expect(title).toContain("生成失败");
-    expect(title).toContain("模型返回 502");
-  });
-
-  it("未失败节点 title 不含 '生成失败' 前缀", () => {
-    const graph: KnowledgeGraph = {
-      nodes: [
-        {
-          id: "B06",
-          label: "煤炭",
-          category: "B",
-          description: "煤炭的开采",
-          status: "generated",
-          failed_reason: null,
-          last_attempt_at: null,
-        },
-      ],
-      edges: [],
-      generated_at: "",
-      llm_config_hash: "",
-      schema_version: "v1",
-    };
-    render(<GraphView graph={graph} />);
-    const node = screen.getByTestId("graph-node-煤炭");
-    const title = node.getAttribute("title") || "";
-    expect(title).not.toContain("生成失败");
-  });
-});
+/**
+ * v6:删除了 GraphView / GraphNode(react-flow 弃用,改用 react-force-graph-2d)。
+ * 失败节点的 tooltip 行为现在由 react-force-graph 自带的 nodeLabel 机制 +
+ * NodePanel 负责承载,不再用 DOM `title` 属性。
+ *
+ * 这里只保留 Tooltip 组件和 CSS tokens 的测试。
+ */
 
 describe("Tooltip 显示 failed_reason(T6 §6.8 #7)", () => {
   it("可以用 Tooltip 包装任意元素显示自定义 failed_reason", () => {

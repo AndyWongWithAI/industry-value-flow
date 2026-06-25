@@ -2,19 +2,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
-import { MemoryRouter } from "react-router-dom";
-import { GraphPage } from "../pages/GraphPage";
-import {
-  LLMUnavailableError,
-  type ApiGetGraphFn,
-  type ApiRegenerateFailedFn,
-  type ApiExplainEdgeFn,
-} from "../lib/api-helpers";
-import type { KnowledgeGraph } from "../types/api";
+import type { GraphEdge, GraphNode } from "../types/api";
 
 expect.extend(matchers);
 
-// react-flow v11 需要 ResizeObserver / getBoundingClientRect
+/**
+ * v6:GraphPage 集成测试
+ *
+ * 关键策略:
+ *  - ForceGraph(react-force-graph-2d)在 jsdom 里 canvas 不能用,
+ *    用 vi.mock 把 "../components/ForceGraph" 替换为 Stub:
+ *    1. 对每个 node 渲染 <div data-testid="graph-node-{label}">
+ *       (保留原 GraphView 的 testid 契约)
+ *    2. 同时挂一个 <button data-testid="rf__node-{id}"> 用于 fireEvent.click
+ *       (保留原 react-flow 的 testid 契约,让 NodePanel 触发逻辑保持不变)
+ *    3. 对每条 edge 挂 <button data-testid="rf__edge-{id}"> 供 e2e-边点击用
+ */
+
+// 在 import GraphPage 之前先 mock ResizeObserver(jsdom 没有),
+// 否则 GraphPage useEffect 里 new ResizeObserver 会抛错
 class ResizeObserverMock {
   observe() {}
   unobserve() {}
@@ -25,20 +31,66 @@ class ResizeObserverMock {
 if (!Element.prototype.getBoundingClientRect) {
   Element.prototype.getBoundingClientRect = function () {
     return {
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      right: 100,
-      bottom: 100,
-      width: 100,
-      height: 100,
-      toJSON() {
-        return this;
-      },
+      x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 100,
+      width: 100, height: 100, toJSON() { return this; },
     } as DOMRect;
   };
 }
+
+vi.mock("../components/ForceGraph", async () => {
+  const React = await import("react");
+  function Stub({ nodes, edges, onNodeClick, onLinkClick }: {
+    nodes: { id: string; label: string }[];
+    edges: { id?: string; source: string; target: string }[];
+    onNodeClick?: (id: string) => void;
+    onLinkClick?: (id: string) => void;
+  }) {
+    return React.createElement(
+      "div",
+      { "data-testid": "graph-view" },
+      nodes.map((n) =>
+        React.createElement(
+          "div",
+          {
+            key: n.id,
+            "data-testid": `graph-node-${n.label}`,
+          },
+          React.createElement(
+            "button",
+            {
+              "data-testid": `rf__node-${n.id}`,
+              onClick: () => onNodeClick?.(n.id),
+            },
+            n.label,
+          ),
+        ),
+      ),
+      edges.map((e, idx) =>
+        React.createElement(
+          "button",
+          {
+            key: e.id ?? `${e.source}-${e.target}-${idx}`,
+            "data-testid": `rf__edge-${e.source}->${e.target}-${idx}`,
+            onClick: () => onLinkClick?.(e.id ?? `${e.source}-${e.target}`),
+          },
+          "edge",
+        ),
+      ),
+    );
+  }
+  return { ForceGraph: Stub };
+});
+
+// Import after mock
+import { MemoryRouter } from "react-router-dom";
+import { GraphPage } from "../pages/GraphPage";
+import {
+  LLMUnavailableError,
+  type ApiGetGraphFn,
+  type ApiRegenerateFailedFn,
+  type ApiExplainEdgeFn,
+} from "../lib/api-helpers";
+import type { KnowledgeGraph } from "../types/api";
 
 const GRAPH: KnowledgeGraph = {
   nodes: [
@@ -72,6 +124,7 @@ const GRAPH: KnowledgeGraph = {
   ],
   edges: [
     {
+      id: "B06-D44",
       source: "B06",
       target: "D44",
       relation_type: "supports",
@@ -82,6 +135,7 @@ const GRAPH: KnowledgeGraph = {
       last_attempt_at: null,
     },
     {
+      id: "D44-C17",
       source: "D44",
       target: "C17",
       relation_type: "supports",
@@ -102,7 +156,7 @@ beforeEach(() => {
 });
 
 describe("GraphPage 集成", () => {
-  it("加载成功后渲染 StatusBar + GraphView(节点/边)", async () => {
+  it("加载成功后渲染 StatusBar + ForceGraph(节点/边)", async () => {
     const getGraph = vi.fn<ApiGetGraphFn>(async () => GRAPH);
     render(
       <MemoryRouter>
@@ -161,7 +215,7 @@ describe("GraphPage 集成", () => {
       </MemoryRouter>
     );
     await screen.findByTestId("graph-node-煤炭开采和洗选业");
-    // 通过 react-flow 自带 data-testid rf__node-<id> 触发点击
+    // 通过 stub ForceGraph 提供的 rf__node-{id} 触发点击
     const rfNode = screen.getByTestId("rf__node-B06");
     fireEvent.click(rfNode);
     const panel = await screen.findByTestId("node-panel");
@@ -210,7 +264,7 @@ describe("GraphPage 集成", () => {
   });
 
   it("NodePanel 入边点击 → EdgePanel 出现 + 重新解释按钮触发 API", async () => {
-    // 走 NodePanel 内部 onEdgeClick 路径,绕开 react-flow jsdom 边点击限制
+    // 走 NodePanel 内部 onEdgeClick 路径,绕开 ForceGraph jsdom 边点击限制
     const getGraph = vi.fn<ApiGetGraphFn>(async () => GRAPH);
     const explainEdge = vi.fn<ApiExplainEdgeFn>(async () => ({
       explanation: "新解释",
@@ -235,5 +289,21 @@ describe("GraphPage 集成", () => {
     await waitFor(() => {
       expect(explainEdge).toHaveBeenCalled();
     });
+  });
+
+  it("点击边 → EdgePanel 出现(ForceGraph onLinkClick 透传 linkId)", async () => {
+    const getGraph = vi.fn<ApiGetGraphFn>(async () => GRAPH);
+    render(
+      <MemoryRouter>
+        <GraphPage api={{ getGraph }} />
+      </MemoryRouter>
+    );
+    await screen.findByTestId("graph-node-煤炭开采和洗选业");
+    // 通过 stub ForceGraph 提供的 rf__edge-{source}->{target}-{idx} 触发
+    const edge = screen.getByTestId("rf__edge-B06->D44-0");
+    fireEvent.click(edge);
+    const panel = await screen.findByTestId("edge-panel");
+    expect(panel).toBeInTheDocument();
+    expect(panel).toHaveTextContent("煤炭是火力发电的主要燃料");
   });
 });

@@ -2,12 +2,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
-import { MemoryRouter } from "react-router-dom";
-import { GraphPage } from "../pages/GraphPage";
-import type { KnowledgeGraph, GraphEdge } from "../types/api";
+import type { GraphEdge, GraphNode } from "../types/api";
 
 expect.extend(matchers);
 
+/**
+ * v6:解释 Edge URL 契约测试。
+ *
+ * ForceGraph 用 stub mock(同 test_GraphPage.test.tsx),
+ * 让点击节点 / 边都能触发 onNodeClick / onLinkClick。
+ */
+
+// jsdom 没 ResizeObserver — 在 import GraphPage 前先 mock
 class ResizeObserverMock {
   observe() {}
   unobserve() {}
@@ -23,6 +29,54 @@ if (!Element.prototype.getBoundingClientRect) {
     } as DOMRect;
   };
 }
+
+vi.mock("../components/ForceGraph", async () => {
+  const React = await import("react");
+  function Stub({ nodes, edges, onNodeClick, onLinkClick }: {
+    nodes: { id: string; label: string }[];
+    edges: { id?: string; source: string; target: string }[];
+    onNodeClick?: (id: string) => void;
+    onLinkClick?: (id: string) => void;
+  }) {
+    return React.createElement(
+      "div",
+      { "data-testid": "graph-view" },
+      nodes.map((n) =>
+        React.createElement(
+          "div",
+          {
+            key: n.id,
+            "data-testid": `graph-node-${n.label}`,
+          },
+          React.createElement(
+            "button",
+            {
+              "data-testid": `rf__node-${n.id}`,
+              onClick: () => onNodeClick?.(n.id),
+            },
+            n.label,
+          ),
+        ),
+      ),
+      edges.map((e, idx) =>
+        React.createElement(
+          "button",
+          {
+            key: e.id ?? `${e.source}-${e.target}-${idx}`,
+            "data-testid": `rf__edge-${e.source}->${e.target}-${idx}`,
+            onClick: () => onLinkClick?.(e.id ?? `${e.source}-${e.target}`),
+          },
+          "edge",
+        ),
+      ),
+    );
+  }
+  return { ForceGraph: Stub };
+});
+
+import { MemoryRouter } from "react-router-dom";
+import { GraphPage } from "../pages/GraphPage";
+import type { KnowledgeGraph } from "../types/api";
 
 const baseEdge: GraphEdge = {
   id: "B06-D44",

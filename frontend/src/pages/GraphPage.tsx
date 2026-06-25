@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { GraphView } from "../components/GraphView";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ForceGraph } from "../components/ForceGraph";
 import { StatusBar } from "../components/StatusBar";
 import { NodePanel } from "../components/NodePanel";
 import { EdgePanel } from "../components/EdgePanel";
@@ -18,10 +18,14 @@ import type { GraphEdge, GraphNode, KnowledgeGraph } from "../types/api";
 /**
  * 知识图谱页(T6 完整版):
  *  - 顶部 StatusBar:已生成 X / Y, 失败 Z, [重跑]
- *  - 主区:GraphView 全图渲染
+ *  - 主区:ForceGraph 全图渲染(v6 react-force-graph-2d)
  *  - 右侧:点击节点 → NodePanel,点击边 → EdgePanel
  *  - LLM 不可用 → EmptyState
- *  - Partial failure:统计 / 红色边框 / 状态条 / 失败条 统一呈现
+ *  - Partial failure:统计 / 红色 label / 失败边虚线 / 状态条统一呈现
+ *
+ * v6:把 v5 的 GraphView(react-flow + d3-force)换成 ForceGraph
+ * (react-force-graph-2d + 内置 physics)。容器尺寸用 ResizeObserver
+ * 动态测,Feed 给 ForceGraph(width / height)。
  *
  * 设计决策:
  *  - 不在 GraphPage 维护持久 state(只维护 selectedNode/selectedEdge + 加载态)
@@ -80,6 +84,39 @@ export function GraphPage(props: GraphPageProps = {}) {
     null
   );
   const [loading, setLoading] = useState(true);
+
+  // v6:动态测容器尺寸,喂给 ForceGraph。
+  // 默认 fallback 800x600 — 浏览器环境 ResizeObserver 会立即覆盖;
+  // jsdom 测试环境 ResizeObserver 不回调时,fallback 让图能渲染。
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number }>({
+    width: 800,
+    height: 600,
+  });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      // jsdom 没有 layout,getBoundingClientRect 总是 0x0 — 不覆盖默认 fallback。
+      // 浏览器 layout 后第一次回调会有真实尺寸,正常更新。
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: rect.width, height: rect.height });
+      }
+    };
+    update();
+    // ResizeObserver 监听尺寸变化 — 浏览器环境原生支持,
+    // jsdom 测试环境没有 ResizeObserver,try/catch 兜底让 effect 静默跳过。
+    if (typeof ResizeObserver === "undefined") return;
+    try {
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    } catch {
+      return;
+    }
+  }, []);
 
   // 加载图谱
   useEffect(() => {
@@ -165,14 +202,30 @@ export function GraphPage(props: GraphPageProps = {}) {
     }
   };
 
-  const handleNodeClick = (n: GraphNode) => {
+  // v6:ForceGraph 把 nodeId / linkId 字符串透传给上层,我们还原成 GraphNode/GraphEdge。
+  // 同时兼容 NodePanel 的入/出边点击 — 它直接传 GraphEdge 对象。
+  const handleNodeClick = (nodeId: string) => {
+    if (!graph) return;
+    const original = graph.nodes.find((n) => n.id === nodeId);
+    if (!original) return;
     setSelectedEdge(null);
-    setSelectedNode(n);
+    setSelectedNode(original);
   };
 
-  const handleEdgeClick = (e: GraphEdge) => {
+  const handleEdgeClick = (linkIdOrEdge: string | GraphEdge) => {
+    if (!graph) return;
+    let original: GraphEdge | undefined;
+    if (typeof linkIdOrEdge === "string") {
+      // linkId 可能来自后端合成的 edge.id(如 "B06-D44")或 source-target fallback
+      original =
+        graph.edges.find((e) => e.id === linkIdOrEdge) ??
+        graph.edges.find((e) => `${e.source}-${e.target}` === linkIdOrEdge);
+    } else {
+      original = linkIdOrEdge;
+    }
+    if (!original) return;
     setSelectedNode(null);
-    setSelectedEdge(e);
+    setSelectedEdge(original);
   };
 
   // LLM 不可用:仅展示 EmptyState(不画图谱,也不显示 StatusBar 数据)
@@ -207,29 +260,38 @@ export function GraphPage(props: GraphPageProps = {}) {
           position: "relative",
         }}
       >
-        {loading && !graph && (
-          <div
-            data-testid="graph-page-loading"
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--color-text-tertiary)",
-              fontSize: 14,
-            }}
-          >
-            加载中...
-          </div>
-        )}
-        {graph && (
-          <GraphView
-            graph={graph}
-            onNodeClick={handleNodeClick}
-            onEdgeClick={handleEdgeClick}
-          />
-        )}
+        <div
+          ref={containerRef}
+          data-testid="graph-container"
+          style={{ position: "absolute", inset: 0 }}
+        >
+          {loading && !graph && (
+            <div
+              data-testid="graph-page-loading"
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--color-text-tertiary)",
+                fontSize: 14,
+              }}
+            >
+              加载中...
+            </div>
+          )}
+          {graph && size.width > 0 && size.height > 0 && (
+            <ForceGraph
+              nodes={graph.nodes}
+              edges={graph.edges}
+              onNodeClick={handleNodeClick}
+              onLinkClick={handleEdgeClick}
+              width={size.width}
+              height={size.height}
+            />
+          )}
+        </div>
       </main>
       {graph && selectedNode && (
         <NodePanel
