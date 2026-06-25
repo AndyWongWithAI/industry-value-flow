@@ -29,14 +29,18 @@ beforeEach(() => {
 // / onNodeClick 等传给底层库"。
 import * as ReactNS from "react";
 let lastForceGraph2DProps: Record<string, unknown> | null = null;
+// v6.1:测试可注入的 mock ref(让单测验证 onEngineStop → zoomToFit 路径)。
+// stub 会把这个对象赋给 forwardRef 的 ref.current,组件的 onEngineStop 回调
+// 实际调到的就是 testRef.zoomToFit。
+let testRef: { zoomToFit?: (...args: unknown[]) => void } = {};
 
 vi.mock("react-force-graph-2d", () => {
   const Stub = ReactNS.forwardRef(function ForceGraphStub(
     props: Record<string, unknown>,
     ref: ReactNS.Ref<unknown>,
   ) {
-    if (typeof ref === "function") ref({});
-    else if (ref) (ref as ReactNS.MutableRefObject<unknown>).current = {};
+    if (typeof ref === "function") ref(testRef);
+    else if (ref) (ref as ReactNS.MutableRefObject<unknown>).current = testRef;
     lastForceGraph2DProps = props;
     return ReactNS.createElement("canvas", {
       "data-testid": "force-graph-canvas-stub",
@@ -109,6 +113,7 @@ const EDGES: GraphEdge[] = [
 describe("ForceGraph v6 (react-force-graph-2d wrapper)", () => {
   beforeEach(() => {
     lastForceGraph2DProps = null;
+    testRef = {};
   });
 
   it("renders a canvas element via the underlying react-force-graph-2d", () => {
@@ -237,5 +242,70 @@ describe("ForceGraph v6 (react-force-graph-2d wrapper)", () => {
     ) => number;
     expect(arrowLen({ status: "failed" })).toBe(0);
     expect(arrowLen({ status: "generated" })).toBe(5);
+  });
+
+  // ---------- v6.1 polish: zoomToFit on engine stop (fix graph clumping in top-left) ----------
+
+  it("passes onEngineStop callback to react-force-graph-2d (so centering happens AFTER simulation stabilizes, not before)", () => {
+    render(<ForceGraph nodes={NODES} edges={EDGES} width={800} height={600} />);
+    expect(typeof lastForceGraph2DProps!.onEngineStop).toBe("function");
+  });
+
+  it("onEngineStop calls zoomToFit on the ref (initial centering)", () => {
+    const zoomToFitSpy = vi.fn();
+    testRef = { zoomToFit: zoomToFitSpy };
+    render(<ForceGraph nodes={NODES} edges={EDGES} width={800} height={600} />);
+    const onEngineStop = lastForceGraph2DProps!.onEngineStop as () => void;
+    onEngineStop();
+    expect(zoomToFitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("onEngineStop calls zoomToFit only on first engine stop (does not re-fit on subsequent stops)", () => {
+    const zoomToFitSpy = vi.fn();
+    testRef = { zoomToFit: zoomToFitSpy };
+    render(<ForceGraph nodes={NODES} edges={EDGES} width={800} height={600} />);
+    const onEngineStop = lastForceGraph2DProps!.onEngineStop as () => void;
+    onEngineStop();
+    onEngineStop();
+    onEngineStop();
+    expect(zoomToFitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("onEngineStop re-fits when graphData changes (re-render with new data → new fit)", () => {
+    const zoomToFitSpy = vi.fn();
+    testRef = { zoomToFit: zoomToFitSpy };
+    const { rerender } = render(
+      <ForceGraph nodes={NODES} edges={EDGES} width={800} height={600} />
+    );
+    const onEngineStop = lastForceGraph2DProps!.onEngineStop as () => void;
+    onEngineStop();
+    expect(zoomToFitSpy).toHaveBeenCalledTimes(1);
+    // simulate regenerate: 新的 graphData
+    rerender(
+      <ForceGraph
+        nodes={[...NODES, {
+          id: "E47",
+          label: "建筑",
+          category: "E",
+          description: "建筑",
+          status: "generated",
+          failed_reason: null,
+          last_attempt_at: null,
+        }]}
+        edges={EDGES}
+        width={800}
+        height={600}
+      />
+    );
+    const onEngineStop2 = lastForceGraph2DProps!.onEngineStop as () => void;
+    onEngineStop2();
+    expect(zoomToFitSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("onEngineStop does not throw when ref has no zoomToFit (graceful degradation)", () => {
+    testRef = {}; // no zoomToFit
+    render(<ForceGraph nodes={NODES} edges={EDGES} width={800} height={600} />);
+    const onEngineStop = lastForceGraph2DProps!.onEngineStop as () => void;
+    expect(() => onEngineStop()).not.toThrow();
   });
 });

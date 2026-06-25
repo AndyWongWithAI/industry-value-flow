@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect, useState } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { GraphNode, GraphEdge } from "../types/api";
 
@@ -130,19 +130,30 @@ export function ForceGraph({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
-  // 物理 simulation 收敛后 d3AlphaDecay 自动停止;我们额外监听 graphData 变化
-  // 让 React 在 mount 时手动 zoomToFit,保证首次加载图居中。
-  const [hasFit, setHasFit] = useState(false);
-  useEffect(() => {
-    if (!hasFit && fgRef.current && typeof fgRef.current.zoomToFit === "function") {
-      try {
-        fgRef.current.zoomToFit(400, 50);
-      } catch {
-        // jsdom 下 canvas 拿不到 bbox,静默兜底
-      }
-      setHasFit(true);
+  // v6.1:跟踪 graphData 版本(用于"regenerate 后重 fit")。
+  // graphData 引用变化 → version +1。useRef + 对象引用比较最稳。
+  const dataVersionRef = useRef(0);
+  const prevDataRef = useRef(graphData);
+  if (prevDataRef.current !== graphData) {
+    prevDataRef.current = graphData;
+    dataVersionRef.current += 1;
+  }
+  // 记录"已经 fit 过的 version" — 用 ref 避免触发额外 render
+  const fittedVersionRef = useRef(-1);
+
+  // v6.1:onEngineStop 是 react-force-graph 原生回调,物理 simulation 收敛后触发。
+  // 此时所有节点 x/y 已有值,bbox 有效 → zoomToFit 真正生效。
+  // 不要在 useEffect 里调 zoomToFit,React mount 时 canvas 还没初始化,bbox 全 0。
+  const handleEngineStop = () => {
+    if (fittedVersionRef.current === dataVersionRef.current) return;
+    if (!fgRef.current || typeof fgRef.current.zoomToFit !== "function") return;
+    try {
+      fgRef.current.zoomToFit(400, 50);
+    } catch {
+      // jsdom 拿不到 bbox 时静默兜底
     }
-  }, [hasFit, graphData]);
+    fittedVersionRef.current = dataVersionRef.current;
+  };
 
   // e2e 钩子:在 dev/test 环境下,把 onNodeClick 透传到 window.__simulateNodeClick
   // 让 Playwright 不依赖 canvas 坐标即可触发节点点击。
@@ -222,6 +233,7 @@ export function ForceGraph({
         }}
         onNodeClick={handleNodeClick}
         onLinkClick={handleLinkClick}
+        onEngineStop={handleEngineStop}
         d3AlphaDecay={0.02}
         d3VelocityDecay={0.3}
         cooldownTicks={100}
