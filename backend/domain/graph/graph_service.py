@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -43,6 +43,7 @@ from schema.graph import (
     NodeStatus,
     RelationType,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,15 @@ class LLMUnavailableError(Exception):
     """LLM 完全不可用(无 key / 网络挂) — 启动报错,前端白屏 + '请配置 LLM'"""
 
 
+class TransientLLMError(Exception):
+    """LLM 单次调用失败(LLM 整体可用,只是这次失败)。
+
+    区分 LLMUnavailableError(整体挂)和 TransientLLMError(瞬断):
+    - 整体挂 -> 启动失败,不写 cache
+    - 瞬断 -> 把当前 node/edge 标 failed,继续下一个
+    """
+
+
 class GraphService:
     """知识图谱服务 — LLM 初始化 + partial state 持久化 + regenerate_failed."""
 
@@ -89,6 +99,9 @@ class GraphService:
         # 计算 LLM 配置 hash(provider + model + api_key 前 8 位)
         # 通过属性延迟计算(llm_client 可能没有暴露 api_key;我们用通用接口)
         self._llm_config_hash: str | None = None
+        # Track whether LLM has produced at least one successful response.
+        # 用来区分"整体挂"(从未成功) vs "瞬断"(曾经成功,这次失败)。
+        self._llm_ever_succeeded: bool = False
 
     # ---------- public ----------
 
@@ -136,13 +149,34 @@ class GraphService:
         if scope in ("nodes", "all"):
             failed_nodes = self.storage.list_failed_nodes()
             for node in failed_nodes:
-                regenerated = await self._generate_node(node.id)
+                try:
+                    regenerated = await self._generate_node(node.id)
+                except Exception as e:
+                    # 重跑仍失败(LLMUnavailableError/TransientLLMError/JSON
+                    # 错误等):更新 failed_reason,保持 failed
+                    logger.warning("regenerate node %s failed: %s", node.id, e)
+                    node.failed_reason = str(e)
+                    node.last_attempt_at = datetime.now(timezone.utc)
+                    self.storage.upsert_node(node)
+                    continue
                 self.storage.upsert_node(regenerated)
 
         if scope in ("edges", "all"):
             failed_edges = self.storage.list_failed_edges()
             for edge in failed_edges:
-                regenerated = await self._generate_edge(edge.source, edge.target)
+                try:
+                    regenerated = await self._generate_edge(
+                        edge.source, edge.target
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "regenerate edge %s->%s failed: %s",
+                        edge.source, edge.target, e,
+                    )
+                    edge.failed_reason = str(e)
+                    edge.last_attempt_at = datetime.now(timezone.utc)
+                    self.storage.upsert_edge(edge)
+                    continue
                 self.storage.upsert_edge(regenerated)
 
         # 重新加载图 + 失效缓存(让 partial state 被重新持久化)
@@ -182,8 +216,12 @@ class GraphService:
             except LLMUnavailableError:
                 # LLM 整体挂 -> 立刻抛,partial state 已持久化(直到失败的)
                 raise
+            except TransientLLMError as e:
+                # 瞬断:标记 failed + 持久化,继续下一个
+                logger.warning("node %s transient failure: %s", code, e)
+                node = _make_failed_node(code, str(e))
             except Exception as e:
-                # 单节点失败:标记 failed + 持久化,继续下一个
+                # JSON 解析错误 / ValidationError 等也走这里
                 logger.warning("node %s generation failed: %s", code, e)
                 node = _make_failed_node(code, str(e))
             self.storage.upsert_node(node)
@@ -197,6 +235,9 @@ class GraphService:
                 edge = await self._generate_edge(src, tgt)
             except LLMUnavailableError:
                 raise
+            except TransientLLMError as e:
+                logger.warning("edge %s->%s transient failure: %s", src, tgt, e)
+                edge = _make_failed_edge(src, tgt, str(e))
             except Exception as e:
                 logger.warning("edge %s->%s generation failed: %s", src, tgt, e)
                 edge = _make_failed_edge(src, tgt, str(e))
@@ -206,7 +247,7 @@ class GraphService:
         return KnowledgeGraph(
             nodes=nodes,
             edges=edges,
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             llm_config_hash=config_hash,
         )
 
@@ -234,11 +275,14 @@ class GraphService:
             category=Category(category_str),
             description=description,
             status=NodeStatus.generated,
-            last_attempt_at=datetime.utcnow(),
+            last_attempt_at=datetime.now(timezone.utc),
         )
 
     async def _generate_edge(self, source_id: str, target_id: str) -> GraphEdge:
-        """LLM 生成单条边(RelationType + weight + reason)."""
+        """LLM 生成单条边(RelationType + weight + reason).
+
+        spec 3.4:JSON 格式错误重试 1 次,再失败 -> 抛异常让上层标 failed.
+        """
         if not is_valid_middle_category_code(source_id):
             raise ValueError(f"source {source_id!r} not in GB/T 4754 whitelist")
         if not is_valid_middle_category_code(target_id):
@@ -255,30 +299,56 @@ class GraphService:
             f'"explanation": "<一句话中文解释,不超过 40 字>"}}\n\n'
             f"weight 5 = 强核心依赖,1 = 弱/偶发关联。"
         )
-        raw = await self._call_llm_with_retry(prompt)
-        data = _parse_json_strict(raw)
-        return GraphEdge(
-            source=source_id,
-            target=target_id,
-            relation_type=RelationType(data["relation_type"]),
-            weight=int(data["weight"]),
-            explanation=str(data["explanation"]),
-            status=NodeStatus.generated,
-            last_attempt_at=datetime.utcnow(),
-        )
+        # spec 3.4:JSON 错误重试 1 次
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            raw = await self._call_llm_with_retry(prompt)
+            try:
+                data = _parse_json_strict(raw)
+                return GraphEdge(
+                    source=source_id,
+                    target=target_id,
+                    relation_type=RelationType(data["relation_type"]),
+                    weight=int(data["weight"]),
+                    explanation=str(data["explanation"]),
+                    status=NodeStatus.generated,
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                last_exc = e
+                logger.warning(
+                    "edge %s->%s JSON parse attempt %d failed: %s",
+                    source_id, target_id, attempt + 1, e,
+                )
+        # 2 次都失败
+        assert last_exc is not None
+        raise ValueError(
+            f"LLM JSON 解析失败 2 次: {last_exc!s}"
+        ) from last_exc
 
     # ---------- LLM call ----------
 
     async def _call_llm_with_retry(self, prompt: str) -> str:
-        """调 LLM,JSON 解析错误重试 1 次,网络挂抛 LLMUnavailableError."""
+        """调 LLM,JSON 解析错误重试 1 次。
+
+        错误处理策略(对齐 spec 3.4):
+        - 首次调用就失败(LLM 从未成功过) -> 抛 LLMUnavailableError
+          (前端白屏 + '请配置 LLM')
+        - 已经成功过,这一次失败 -> 抛 TransientLLMError,让调用方把当前
+          node/edge 标 failed,然后继续
+        """
         try:
             first = await self.llm.generate(prompt)
         except Exception as e:
-            # LLM 网络/认证挂了 — 整体不可用
-            logger.error("LLM generate failed: %s", e)
+            if self._llm_ever_succeeded:
+                # transient: 让调用方把 node/edge 标 failed
+                raise TransientLLMError(str(e)) from e
+            # 首次失败 -> 整体不可用
+            logger.error("LLM generate failed (never succeeded): %s", e)
             raise LLMUnavailableError(
                 f"LLM 不可用: {e!s}. 请检查 LLM 配置。"
             ) from e
+        self._llm_ever_succeeded = True
         return first
 
     # ---------- config hash ----------
@@ -323,7 +393,7 @@ def _make_failed_node(code: str, reason: str) -> GraphNode:
         description="",
         status=NodeStatus.failed,
         failed_reason=reason,
-        last_attempt_at=datetime.utcnow(),
+        last_attempt_at=datetime.now(timezone.utc),
     )
 
 
@@ -336,7 +406,7 @@ def _make_failed_edge(source_id: str, target_id: str, reason: str) -> GraphEdge:
         explanation="",
         status=NodeStatus.failed,
         failed_reason=reason,
-        last_attempt_at=datetime.utcnow(),
+        last_attempt_at=datetime.now(timezone.utc),
     )
 
 

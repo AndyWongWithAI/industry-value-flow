@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -186,7 +186,7 @@ class GraphRepo:
         if not nodes:
             return None
         edges = self.list_edges()
-        generated_at = datetime.utcnow()
+        generated_at = datetime.now(timezone.utc)
         return KnowledgeGraph(
             nodes=nodes,
             edges=edges,
