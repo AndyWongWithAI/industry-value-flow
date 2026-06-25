@@ -279,9 +279,12 @@ class GraphService:
         )
 
     async def _generate_edge(self, source_id: str, target_id: str) -> GraphEdge:
-        """LLM 生成单条边(RelationType + weight + reason).
+        """LLM 生成单条边(weight + reason,relation_type 固定 supports).
 
         spec 3.4:JSON 格式错误重试 1 次,再失败 -> 抛异常让上层标 failed.
+
+        v2 收敛(2026-06-25):relation_type 固定为 `supports`(A 支撑 B,单向)。
+        LLM 只需判断 weight + 解释;不再让 LLM 在 4 种类型间选择。
         """
         if not is_valid_middle_category_code(source_id):
             raise ValueError(f"source {source_id!r} not in GB/T 4754 whitelist")
@@ -289,14 +292,16 @@ class GraphService:
             raise ValueError(f"target {target_id!r} not in GB/T 4754 whitelist")
         s_label = get_label_for_code(source_id) or source_id
         t_label = get_label_for_code(target_id) or target_id
-        # 列所有合法关系类型,让 LLM 选
-        relation_choices = ", ".join(r.value for r in RelationType)
+        # v2 收敛:关系类型固定为 supports,语义 A → B = A 支撑 B(单向)
         prompt = (
             f"分析行业 {source_id}({s_label}) 与行业 {target_id}({t_label}) 之间的产业关系。\n\n"
+            f"方向语义:**{s_label} 是 {t_label} 的上游** —— {s_label} 支撑 {t_label} "
+            f"(资源 / 服务 / 技术从 {s_label} 流向 {t_label})。\n\n"
+            f"**禁止生成双向边**:即使 {s_label} 与 {t_label} 看似互依,本条边方向固定为 "
+            f"{source_id} → {target_id};反向 {target_id} → {source_id} 由另一条独立边承载。\n\n"
             f"返回严格 JSON 格式(不要 markdown,不要解释):\n"
-            f'{{"relation_type": "<{relation_choices} 中之一>", '
-            f'"weight": <1-5 整数,关系强度>, '
-            f'"explanation": "<一句话中文解释,不超过 40 字>"}}\n\n'
+            f'{{"weight": <1-5 整数,关系强度>, '
+            f'"explanation": "<一句话中文解释,不超过 40 字,说明 {s_label} 如何支撑 {t_label}>"}}\n\n'
             f"weight 5 = 强核心依赖,1 = 弱/偶发关联。"
         )
         # spec 3.4:JSON 错误重试 1 次
@@ -308,7 +313,7 @@ class GraphService:
                 return GraphEdge(
                     source=source_id,
                     target=target_id,
-                    relation_type=RelationType(data["relation_type"]),
+                    relation_type=RelationType.supports,  # v2:固定 supports
                     weight=int(data["weight"]),
                     explanation=str(data["explanation"]),
                     status=NodeStatus.generated,
@@ -349,13 +354,14 @@ class GraphService:
         # 直接调 LLM 生成新解释(用 _generate_edge 的 prompt 风格)
         s_label = get_label_for_code(source) or source
         t_label = get_label_for_code(target) or target
-        relation_choices = ", ".join(r.value for r in RelationType)
+        # v2 收敛:关系类型固定为 supports(单向 A 支撑 B)
         prompt = (
             f"分析行业 {source}({s_label}) 与行业 {target}({t_label}) 之间的产业关系。\n\n"
+            f"方向语义:**{s_label} 支撑 {t_label}** —— 资源 / 服务 / 技术从 {s_label} 流向 {t_label}。\n\n"
+            f"**禁止生成双向边**:本边方向固定为 {source} → {target}。\n\n"
             f"返回严格 JSON 格式(不要 markdown,不要解释):\n"
-            f'{{"relation_type": "<{relation_choices} 中之一>", '
-            f'"weight": <1-5 整数,关系强度>, '
-            f'"explanation": "<一句话中文解释,不超过 40 字>"}}\n\n'
+            f'{{"weight": <1-5 整数,关系强度>, '
+            f'"explanation": "<一句话中文解释,不超过 40 字,说明 {s_label} 如何支撑 {t_label}>"}}\n\n'
             f"weight 5 = 强核心依赖,1 = 弱/偶发关联。"
         )
 
@@ -468,7 +474,7 @@ def _make_failed_edge(source_id: str, target_id: str, reason: str) -> GraphEdge:
     return GraphEdge(
         source=source_id,
         target=target_id,
-        relation_type=RelationType.supports,  # placeholder
+        relation_type=RelationType.supports,  # v2:固定 supports(原 placeholder 保留)
         weight=1,  # placeholder
         explanation="",
         status=NodeStatus.failed,
