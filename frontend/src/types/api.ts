@@ -9,8 +9,10 @@ export type Category =
   | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J"
   | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T";
 
-/** 边关系类型(4 种,语义见 spec §3.3) */
-export type RelationType = "provide" | "rely_on" | "service" | "consume";
+/** 边关系类型(v2 收敛为单一 supports,见 spec §3.3)
+ *  语义:A → B = A 支撑 B(单向;禁止反向)
+ */
+export type RelationType = "supports";
 
 /** 节点/边生成状态(partial failure 机制,见 spec §4.4) */
 export type NodeStatus = "pending" | "generated" | "failed";

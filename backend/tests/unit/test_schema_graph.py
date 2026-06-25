@@ -26,12 +26,16 @@ class TestCategoryEnum:
 
 
 class TestRelationTypeEnum:
-    def test_4_种关系(self):
-        assert len(list(RelationType)) == 4
+    def test_1_种关系_v2_收敛(self):
+        # v2 收敛(2026-06-25):4 类(provide/rely_on/service/consume)统一为 supports
+        assert len(list(RelationType)) == 1
 
     def test_枚举值(self):
         values = {r.value for r in RelationType}
-        assert values == {"provide", "rely_on", "service", "consume"}
+        assert values == {"supports"}
+
+    def test_唯一成员是_supports(self):
+        assert RelationType.supports.value == "supports"
 
 
 class TestNodeStatusEnum:
@@ -115,13 +119,13 @@ class TestGraphEdge:
         edge = GraphEdge(
             source="B06",
             target="C17",
-            relation_type=RelationType.provide,
+            relation_type=RelationType.supports,
             weight=4,
             explanation="煤炭为纺织印染提供热能与动力",
         )
         assert edge.source == "B06"
         assert edge.target == "C17"
-        assert edge.relation_type == RelationType.provide
+        assert edge.relation_type == RelationType.supports
         assert edge.weight == 4
         assert edge.status == NodeStatus.pending
 
@@ -130,7 +134,7 @@ class TestGraphEdge:
             GraphEdge(
                 source="XX99",
                 target="C17",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -140,7 +144,7 @@ class TestGraphEdge:
             GraphEdge(
                 source="B06",
                 target="XX99",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -150,7 +154,7 @@ class TestGraphEdge:
             GraphEdge(
                 source="B06",
                 target="C17",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=0,
                 explanation="x",
             )
@@ -160,7 +164,7 @@ class TestGraphEdge:
             GraphEdge(
                 source="B06",
                 target="C17",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=6,
                 explanation="x",
             )
@@ -169,7 +173,7 @@ class TestGraphEdge:
         edge = GraphEdge(
             source="B06",
             target="C17",
-            relation_type=RelationType.provide,
+            relation_type=RelationType.supports,
             weight=1,
             explanation="x",
         )
@@ -179,7 +183,7 @@ class TestGraphEdge:
         edge = GraphEdge(
             source="B06",
             target="C17",
-            relation_type=RelationType.provide,
+            relation_type=RelationType.supports,
             weight=5,
             explanation="x",
         )
@@ -194,6 +198,29 @@ class TestGraphEdge:
                 weight=3,
                 explanation="x",
             )
+
+    def test_边方向自洽_A_支撑_B(self):
+        """v2:边只有 supports 类型;A→B 唯一含义是 A 支撑 B(单向,禁反向)。"""
+        edge = GraphEdge(
+            source="B06",
+            target="C17",
+            relation_type=RelationType.supports,
+            weight=3,
+            explanation="煤炭支撑纺织业",
+        )
+        # A(source) 支撑 B(target) — 方向不可逆
+        assert edge.source != edge.target  # 自检:不是自环
+        assert edge.relation_type == RelationType.supports
+        # 反向边 C17→B06 必须是另一条独立边,且关系类型仍为 supports
+        reverse = GraphEdge(
+            source="C17",
+            target="B06",
+            relation_type=RelationType.supports,
+            weight=1,
+            explanation="反向关系(若真实存在)",
+        )
+        assert edge.relation_type == reverse.relation_type  # 类型相同
+        assert edge.source != reverse.source  # 方向不同
 
 
 class TestGraphStats:
@@ -237,7 +264,7 @@ class TestKnowledgeGraph:
             GraphEdge(
                 source="C17",
                 target="C18",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=4,
                 explanation="x",
             )
@@ -258,7 +285,7 @@ class TestKnowledgeGraph:
             GraphEdge(
                 source="B06",  # 合法 GB/T 代码,但不在 nodes 列表
                 target="C17",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -278,7 +305,7 @@ class TestKnowledgeGraph:
             GraphEdge(
                 source="C17",
                 target="C18",  # 合法 GB/T 代码,但不在 nodes 列表
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -298,7 +325,7 @@ class TestKnowledgeGraph:
             GraphEdge(
                 source="C17",
                 target="C17",  # self-loop
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -341,7 +368,7 @@ class TestSerialization:
         edge = GraphEdge(
             source="B06",
             target="C17",
-            relation_type=RelationType.provide,
+            relation_type=RelationType.supports,
             weight=4,
             explanation="x",
         )
@@ -355,3 +382,5 @@ class TestSerialization:
         assert d["nodes"][0]["id"] == "C17"
         assert d["edges"][0]["weight"] == 4
         assert d["llm_config_hash"] == "abc"
+        # v2:边关系类型序列化为 "supports"
+        assert d["edges"][0]["relation_type"] == "supports"

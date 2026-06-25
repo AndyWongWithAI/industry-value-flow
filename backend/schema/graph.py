@@ -36,12 +36,20 @@ class Category(str, Enum):
 
 
 class RelationType(str, Enum):
-    """行业间关系类型(箭头方向 = 价值 / 服务流转方向)."""
+    """行业间关系类型(单向 supports).
 
-    provide = "provide"  # 支撑(A 的产品是 B 的原料)
-    rely_on = "rely_on"  # 依赖(B 的运营依赖 A;箭头 A → B,语义: B 依赖 A)
-    service = "service"  # 服务(A 向 B 提供服务)
-    consume = "consume"  # 消费(A 消费 B 的产品)
+    v2 收敛(2026-06-25):原本 4 种(provide / rely_on / service / consume)统一为
+    单一 `supports`,因为 LLM 同时生成这 4 类边时,`provide` 和 `rely_on` 实际是
+    同一条边从两端看,导致重复 + 混乱。
+
+    语义:A → B = A 支撑 B
+        - A 是 B 的上游
+        - 资源 / 服务 / 技术从 A 流向 B
+        - B 的运营 / 生产 / 服务依赖 A
+        - 单向边;**禁止生成反向 B → A**(即使语义看似对称)
+    """
+
+    supports = "supports"  # 支撑(单向,A 支撑 B)
 
 
 class NodeStatus(str, Enum):

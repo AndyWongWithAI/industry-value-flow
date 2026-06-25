@@ -106,7 +106,7 @@ def _make_edge(
     return GraphEdge(
         source=src,
         target=tgt,
-        relation_type=RelationType.provide,
+        relation_type=RelationType.supports,
         weight=weight,
         explanation=explanation,
         status=status,
@@ -165,7 +165,7 @@ class TestInitCacheMiss:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
                     {
-                        "relation_type": "provide",
+                        "relation_type": "supports",
                         "weight": 3,
                         "explanation": "x",
                     },
@@ -238,7 +238,7 @@ class TestPartialFailure:
                 raise RuntimeError("simulated transient LLM error")
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "x"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "x"},
                     ensure_ascii=False,
                 )
             return f"description #{call_count['n']}"
@@ -293,7 +293,7 @@ class TestRegenerateFailed:
         async def fake_generate(prompt: str) -> str:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 4, "explanation": "regen"},
+                    {"relation_type": "supports", "weight": 4, "explanation": "regen"},
                     ensure_ascii=False,
                 )
             return "regenerated description"
@@ -331,7 +331,7 @@ class TestRegenerateFailed:
         async def fake_generate(prompt: str) -> str:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "x"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "x"},
                     ensure_ascii=False,
                 )
             return "regen"
@@ -381,7 +381,7 @@ class TestValidation:
             GraphEdge(
                 source="A01",
                 target="B06",  # 合法 GB/T 但不在 nodes
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -401,7 +401,7 @@ class TestValidation:
             GraphEdge(
                 source="A01",
                 target="A01",
-                relation_type=RelationType.provide,
+                relation_type=RelationType.supports,
                 weight=3,
                 explanation="x",
             )
@@ -500,7 +500,7 @@ class TestInitIdempotent:
         async def fake_generate(prompt: str) -> str:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "x"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "x"},
                     ensure_ascii=False,
                 )
             return "desc"
@@ -576,7 +576,7 @@ class TestEdgeCases:
         async def fake_generate(prompt: str) -> str:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "x"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "x"},
                     ensure_ascii=False,
                 )
             return "ok"
@@ -630,7 +630,7 @@ class TestEdgeCases:
                 if call_count["n"] == 1:
                     return "not json"
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "ok"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "ok"},
                     ensure_ascii=False,
                 )
             return "node desc"
@@ -757,7 +757,7 @@ class TestEdgeCases:
         async def fake_generate(prompt: str) -> str:
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
-                    {"relation_type": "provide", "weight": 3, "explanation": "x"},
+                    {"relation_type": "supports", "weight": 3, "explanation": "x"},
                     ensure_ascii=False,
                 )
             return "ok"
@@ -938,7 +938,7 @@ async def test_reexplain_edge_success(service, storage, llm_client):
     edge = GraphEdge(
         source="B06",
         target="C17",
-        relation_type=RelationType.provide,
+        relation_type=RelationType.supports,
         weight=3,
         explanation="OLD explanation",
         status=NodeStatus.generated,
@@ -948,7 +948,7 @@ async def test_reexplain_edge_success(service, storage, llm_client):
 
     # mock LLM 返回新 explanation
     llm_client.generate = AsyncMock(
-        return_value='{"relation_type": "provide", "weight": 3, '
+        return_value='{"relation_type": "supports", "weight": 3, '
         '"explanation": "矿业为制造业提供原材料"}'
     )
 
@@ -962,7 +962,7 @@ async def test_reexplain_edge_success(service, storage, llm_client):
     updated = storage.get_edge("B06", "C17")
     assert updated is not None
     assert updated.explanation == "矿业为制造业提供原材料"
-    assert updated.relation_type == RelationType.provide
+    assert updated.relation_type == RelationType.supports
     assert updated.weight == 3
 
 
@@ -987,7 +987,7 @@ async def test_reexplain_edge_llm_unavailable(service, storage, llm_client):
     edge = GraphEdge(
         source="B06",
         target="C17",
-        relation_type=RelationType.provide,
+        relation_type=RelationType.supports,
         weight=3,
         explanation="OLD",
         status=NodeStatus.generated,
@@ -1011,7 +1011,7 @@ def test_graph_repo_get_edge_returns_row(tmp_path):
     edge = GraphEdge(
         source="B06",
         target="C17",
-        relation_type=RelationType.provide,
+        relation_type=RelationType.supports,
         weight=4,
         explanation="x",
         status=NodeStatus.generated,

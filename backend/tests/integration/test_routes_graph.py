@@ -55,7 +55,7 @@ def _make_edge(
     return GraphEdge(
         source=source,
         target=target,
-        relation_type=RelationType.provide,
+        relation_type=RelationType.supports,
         weight=3,
         explanation=f"edge {source}->{target}",
         status=status,
@@ -198,7 +198,7 @@ def test_get_edge_found(client, mock_service):
     body = resp.json()
     assert body["source"] == "B06"
     assert body["target"] == "C17"
-    assert body["relation_type"] == "provide"
+    assert body["relation_type"] == "supports"
     assert body["weight"] == 3
 
 

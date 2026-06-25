@@ -468,7 +468,7 @@ def _make_failed_edge(source_id: str, target_id: str, reason: str) -> GraphEdge:
     return GraphEdge(
         source=source_id,
         target=target_id,
-        relation_type=RelationType.provide,  # placeholder
+        relation_type=RelationType.supports,  # placeholder
         weight=1,  # placeholder
         explanation="",
         status=NodeStatus.failed,
