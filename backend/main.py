@@ -1,4 +1,8 @@
-import logging
+"""FastAPI 入口.
+
+T1 后:lifespan 不再清 v1 cache(SankeyData 已删除,不再需要).
+T3 会加 GraphService.ensure_graph() 在 lifespan 启动时初始化知识图谱.
+"""
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,19 +10,11 @@ from routes.industries import router as industries_router
 from routes.industry import router as industry_router
 from routes.llm import router as llm_router
 from routes.settings import router as settings_router
-from domain.storage.cache import Cache
-from config import get_db_path
-
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时清旧 v1 cache(spec §6.1 + 用户决策 B-5)
-    cache = Cache(get_db_path())
-    deleted = cache.delete_prefix(":v1")
-    if deleted > 0:
-        logger.info("cleared %d v1 cache entries on startup", deleted)
+    # T1: 启动钩子空,等 T3 加 GraphService.ensure_graph()
     yield
 
 
