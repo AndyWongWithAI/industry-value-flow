@@ -47,21 +47,42 @@ def get_graph_service(request: Request) -> GraphService | None:
     return getattr(request.app.state, "graph_service", None)
 
 
+def get_startup_error(request: Request) -> str | None:
+    """从 app.state 取 startup_error(T7 加).
+
+    用途:路由返回 503 时,如果 lifespan 记录了 startup_error,
+    就用它的文案作为 message,让前端的 EmptyState 能展示具体原因
+    (LLM 未配置 / client 创建失败 / GraphService 构造失败 等)。
+    """
+    return getattr(request.app.state, "startup_error", None)
+
+
+def _unavailable_message(startup_error: str | None, fallback: str) -> str:
+    """拼装 503 message:优先用 startup_error,缺省走 fallback."""
+    return startup_error or fallback
+
+
 # ---------- GET /api/graph ----------
 
 
 @router.get("/graph")
 async def get_graph(
     svc: GraphService | None = Depends(get_graph_service),
+    startup_error: str | None = Depends(get_startup_error),
 ) -> Any:
     """拉完整知识图谱(react-flow 启动渲染用)."""
     if svc is None:
-        return _err(503, error="llm_unavailable", message="请配置 LLM")
+        msg = _unavailable_message(startup_error, "请配置 LLM")
+        return _err(503, error="llm_unavailable", message=msg)
     try:
         graph = await svc.init_or_load_graph()
     except LLMUnavailableError as e:
         logger.warning("GET /api/graph LLM unavailable: %s", e)
-        return _err(503, error="llm_unavailable", message="请配置 LLM")
+        return _err(
+            503,
+            error="llm_unavailable",
+            message=_unavailable_message(str(e) or None, "请配置 LLM"),
+        )
     stats = svc.compute_stats(graph)
     return {
         "nodes": [n.model_dump(mode="json") for n in graph.nodes],
@@ -77,15 +98,21 @@ async def get_graph(
 async def get_node(
     node_id: str,
     svc: GraphService | None = Depends(get_graph_service),
+    startup_error: str | None = Depends(get_startup_error),
 ) -> Any:
     """单节点详情(NodePanel 用)."""
     if svc is None:
-        return _err(503, error="llm_unavailable", message="请配置 LLM")
+        msg = _unavailable_message(startup_error, "请配置 LLM")
+        return _err(503, error="llm_unavailable", message=msg)
     try:
         graph = await svc.init_or_load_graph()
     except LLMUnavailableError as e:
         logger.warning("GET /api/node/%s LLM unavailable: %s", node_id, e)
-        return _err(503, error="llm_unavailable", message="请配置 LLM")
+        return _err(
+            503,
+            error="llm_unavailable",
+            message=_unavailable_message(str(e) or None, "请配置 LLM"),
+        )
 
     for node in graph.nodes:
         if node.id == node_id:
