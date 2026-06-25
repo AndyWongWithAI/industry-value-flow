@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import "./styles/tokens.css";
+import "./styles/global.css";
 import { GraphPage } from "./pages/GraphPage";
 import { Settings } from "./pages/Settings";
 

@@ -1,168 +1,253 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GraphView } from "../components/GraphView";
+import { StatusBar } from "../components/StatusBar";
+import { NodePanel } from "../components/NodePanel";
+import { EdgePanel } from "../components/EdgePanel";
+import { EmptyState } from "../components/EmptyState";
+import {
+  getGraph,
+  getGraphStats,
+  regenerateFailed,
+  reExplainEdge,
+  LLMUnavailableError,
+  type ApiRegenerateFailedFn,
+  type ApiReExplainEdgeFn,
+} from "../lib/api-helpers";
 import type { GraphEdge, GraphNode, KnowledgeGraph } from "../types/api";
 
 /**
- * 占位 mock 数据(T2 + T3 完成后接真实 API)。
- * - 3 节点 2 边,覆盖 A/B/C/D 4 大类配色
- * - 1 个 provide 边 + 1 个 service 边
- * - T6 阶段会改为从 /api/graph 拉取 + 加 status:failed 节点以验证红色边框
+ * 知识图谱页(T6 完整版):
+ *  - 顶部 StatusBar:已生成 X / Y, 失败 Z, [重跑]
+ *  - 主区:GraphView 全图渲染
+ *  - 右侧:点击节点 → NodePanel,点击边 → EdgePanel
+ *  - LLM 不可用 → EmptyState
+ *  - Partial failure:统计 / 红色边框 / 状态条 / 失败条 统一呈现
+ *
+ * 设计决策:
+ *  - 不在 GraphPage 维护持久 state(只维护 selectedNode/selectedEdge + 加载态)
+ *  - 重跑是 fire-and-forget,T4 接入时再轮询 job 状态
+ *  - 节点详情面板的入/出边点击可以跳到 EdgePanel
  */
-const MOCK_GRAPH: KnowledgeGraph = {
-  nodes: [
-    {
-      id: "B06",
-      label: "煤炭开采和洗选业",
-      category: "B",
-      description: "煤炭的开采、洗选与初步加工",
-      status: "generated",
-      failed_reason: null,
-      last_attempt_at: null,
-    },
-    {
-      id: "D44",
-      label: "电力、热力生产和供应业",
-      category: "D",
-      description: "电力与热力的生产、输送与供应",
-      status: "generated",
-      failed_reason: null,
-      last_attempt_at: null,
-    },
-    {
-      id: "C17",
-      label: "纺织业",
-      category: "C",
-      description: "纺织纤维的加工与织造",
-      status: "generated",
-      failed_reason: null,
-      last_attempt_at: null,
-    },
-  ],
-  edges: [
-    {
-      source: "B06",
-      target: "D44",
-      relation_type: "provide",
-      weight: 4,
-      explanation: "煤炭是火力发电的主要燃料",
-      status: "generated",
-      failed_reason: null,
-      last_attempt_at: null,
-    },
-    {
-      source: "D44",
-      target: "C17",
-      relation_type: "service",
-      weight: 3,
-      explanation: "纺织业生产高度依赖电力供应",
-      status: "generated",
-      failed_reason: null,
-      last_attempt_at: null,
-    },
-  ],
-  generated_at: new Date().toISOString(),
-  llm_config_hash: "mock",
-  schema_version: "v1",
-};
 
-/**
- * 知识图谱页(T5 范围内):
- * - 整图 react-flow 渲染(由 GraphView 负责 dagre 布局)
- * - 点击节点/边 → 右侧 360px 抽屉显示简单信息
- * - T6 会扩展:接入真实 API / NodePanel / EdgePanel / 「AI 解释」按钮 / 状态条
- * - T7 会扩展:LLM 不可用 fallback UI
- */
-export function GraphPage() {
+function computeStats(graph: KnowledgeGraph) {
+  // 客户端兜底计算,T4 上线后用 getGraphStats() 服务端值
+  let generated = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const n of graph.nodes) {
+    if (n.status === "generated") generated++;
+    else if (n.status === "failed") failed++;
+    else pending++;
+  }
+  for (const e of graph.edges) {
+    if (e.status === "generated") generated++;
+    else if (e.status === "failed") failed++;
+    else pending++;
+  }
+  return { total: generated + failed + pending, generated, failed, pending };
+}
+
+export interface GraphPageProps {
+  /** 测试用:允许注入自定义 API(默认从 lib/api 拉) */
+  api?: {
+    getGraph: typeof getGraph;
+    getGraphStats?: typeof getGraphStats;
+    regenerateFailed?: ApiRegenerateFailedFn;
+    reExplainEdge?: ApiReExplainEdgeFn;
+  };
+}
+
+export function GraphPage(props: GraphPageProps = {}) {
+  const api = props.api ?? {
+    getGraph,
+    getGraphStats,
+    regenerateFailed,
+    reExplainEdge: reExplainEdge as ApiReExplainEdgeFn,
+  };
+
+  const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
+  const [rerunning, setRerunning] = useState(false);
+  const [reExplaining, setReExplaining] = useState(false);
+  const [llmError, setLlmError] = useState<{ title: string; subtitle: string; reason?: string } | null>(
+    null
+  );
+  const [loading, setLoading] = useState(true);
+
+  // 加载图谱
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getGraph()
+      .then((g) => {
+        if (!cancelled) {
+          setGraph(g);
+          setLlmError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof LLMUnavailableError) {
+          setLlmError({
+            title: "请先配置 LLM",
+            subtitle:
+              "本平台依赖 LLM 生成行业关系图,未配置无法展示",
+            reason: err.message,
+          });
+        } else {
+          setLlmError({
+            title: "加载失败",
+            subtitle: "无法加载知识图谱,请稍后重试",
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  const stats = useMemo(() => {
+    if (!graph) return { total: 0, generated: 0, failed: 0, pending: 0 };
+    return computeStats(graph);
+  }, [graph]);
+
+  const handleRerun = async () => {
+    setRerunning(true);
+    try {
+      if (api.regenerateFailed) {
+        await api.regenerateFailed("all");
+      }
+      // stub 模式下重拉一次图
+      const g = await api.getGraph();
+      setGraph(g);
+    } catch (err) {
+      // 静默失败 — StatusBar 还在,可以再点
+      console.warn("[GraphPage] regenerate failed", err);
+    } finally {
+      setRerunning(false);
+    }
+  };
+
+  const handleReExplain = async () => {
+    if (!selectedEdge) return;
+    setReExplaining(true);
+    try {
+      if (api.reExplainEdge) {
+        await api.reExplainEdge(selectedEdge.source, selectedEdge.target);
+      }
+      // stub 模式:更新当前边的 explanation
+      setSelectedEdge((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "generated",
+              explanation: `[重新生成] ${prev.source} 与 ${prev.target} 的关系解释...`,
+            }
+          : null
+      );
+    } catch (err) {
+      console.warn("[GraphPage] re-explain failed", err);
+    } finally {
+      setReExplaining(false);
+    }
+  };
+
+  const handleNodeClick = (n: GraphNode) => {
+    setSelectedEdge(null);
+    setSelectedNode(n);
+  };
+
+  const handleEdgeClick = (e: GraphEdge) => {
+    setSelectedNode(null);
+    setSelectedEdge(e);
+  };
+
+  // LLM 不可用:仅展示 EmptyState(不画图谱,也不显示 StatusBar 数据)
+  if (llmError) {
+    return (
+      <EmptyState
+        title={llmError.title}
+        subtitle={llmError.subtitle}
+        reason={llmError.reason}
+      />
+    );
+  }
 
   return (
-    <div style={{ position: "relative" }}>
-      <GraphView
-        graph={MOCK_GRAPH}
-        onNodeClick={setSelectedNode}
-        onEdgeClick={setSelectedEdge}
+    <div
+      style={{
+        position: "relative",
+        minHeight: "100vh",
+        background: "var(--color-bg)",
+        fontFamily: "var(--font-sans)",
+      }}
+    >
+      <StatusBar
+        stats={stats}
+        onRerun={handleRerun}
+        rerunning={rerunning}
       />
-      {selectedNode && (
-        <div
-          data-testid="node-panel"
-          style={{
-            position: "fixed",
-            right: 0,
-            top: 0,
-            width: 360,
-            height: "100vh",
-            background: "#FFFFFF",
-            borderLeft: "1px solid #E5E7EB",
-            padding: 24,
-            overflowY: "auto",
-            boxShadow: "-2px 0 8px rgba(0,0,0,0.04)",
-            zIndex: 10,
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{selectedNode.label}</h2>
-          <div style={{ fontSize: 13, color: "#6B7280", marginTop: 4 }}>
-            GB/T 4754: {selectedNode.id} · {selectedNode.category}
+      <main
+        data-testid="graph-page-main"
+        style={{
+          height: "calc(100vh - 56px)",
+          position: "relative",
+        }}
+      >
+        {loading && !graph && (
+          <div
+            data-testid="graph-page-loading"
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--color-text-tertiary)",
+              fontSize: 14,
+            }}
+          >
+            加载中...
           </div>
-          <p style={{ marginTop: 16, fontSize: 14, lineHeight: 1.6, color: "#1A1A1A" }}>
-            {selectedNode.description}
-          </p>
-          <button
-            onClick={() => setSelectedNode(null)}
-            style={{
-              marginTop: 24,
-              padding: "8px 16px",
-              background: "#F8F9FA",
-              border: "1px solid #E5E7EB",
-              borderRadius: 6,
-              fontSize: 13,
-              cursor: "pointer",
-              color: "#1A1A1A",
-            }}
-          >
-            关闭
-          </button>
-        </div>
+        )}
+        {graph && (
+          <GraphView
+            graph={graph}
+            onNodeClick={handleNodeClick}
+            onEdgeClick={handleEdgeClick}
+          />
+        )}
+      </main>
+      {graph && selectedNode && (
+        <NodePanel
+          node={selectedNode}
+          graph={graph}
+          onClose={() => setSelectedNode(null)}
+          onEdgeClick={handleEdgeClick}
+        />
       )}
-      {selectedEdge && (
-        <div
-          data-testid="edge-panel"
-          style={{
-            position: "fixed",
-            right: 0,
-            top: 0,
-            width: 360,
-            height: "100vh",
-            background: "#FFFFFF",
-            borderLeft: "1px solid #E5E7EB",
-            padding: 24,
-            overflowY: "auto",
-            zIndex: 10,
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>
-            {selectedEdge.relation_type} · weight {selectedEdge.weight}
-          </h2>
-          <p style={{ marginTop: 16, fontSize: 14, lineHeight: 1.6 }}>
-            {selectedEdge.explanation}
-          </p>
-          <button
-            onClick={() => setSelectedEdge(null)}
-            style={{
-              marginTop: 24,
-              padding: "8px 16px",
-              background: "#F8F9FA",
-              border: "1px solid #E5E7EB",
-              borderRadius: 6,
-              fontSize: 13,
-              cursor: "pointer",
-              color: "#1A1A1A",
-            }}
-          >
-            关闭
-          </button>
-        </div>
+      {graph && selectedEdge && (
+        <EdgePanel
+          edge={selectedEdge}
+          sourceNode={
+            graph.nodes.find((n) => n.id === selectedEdge.source) ?? null
+          }
+          targetNode={
+            graph.nodes.find((n) => n.id === selectedEdge.target) ?? null
+          }
+          onClose={() => setSelectedEdge(null)}
+          onReExplain={handleReExplain}
+          reExplaining={reExplaining}
+        />
       )}
     </div>
   );
 }
+
+export default GraphPage;
