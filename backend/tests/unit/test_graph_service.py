@@ -925,3 +925,107 @@ class TestEdgeCases:
 
         with pytest.raises(LLMUnavailableError):
             await service.init_or_load_graph()
+
+
+# ---------- T4 新增: reexplain_edge ----------
+
+
+@pytest.mark.asyncio
+async def test_reexplain_edge_success(service, storage, llm_client):
+    """T4: reexplain_edge 正常返回 {edge_id, explanation, generated_at},
+    并把新 explanation 写回 storage.upsert_edge。"""
+    # seed 一条边
+    edge = GraphEdge(
+        source="B06",
+        target="C17",
+        relation_type=RelationType.provide,
+        weight=3,
+        explanation="OLD explanation",
+        status=NodeStatus.generated,
+        last_attempt_at=datetime.now(timezone.utc),
+    )
+    storage.upsert_edge(edge)
+
+    # mock LLM 返回新 explanation
+    llm_client.generate = AsyncMock(
+        return_value='{"relation_type": "provide", "weight": 3, '
+        '"explanation": "矿业为制造业提供原材料"}'
+    )
+
+    result = await service.reexplain_edge("B06-C17")
+    assert result["edge_id"] == "B06-C17"
+    assert result["explanation"] == "矿业为制造业提供原材料"
+    assert "generated_at" in result
+    llm_client.generate.assert_awaited_once()
+
+    # 持久化的边被更新(新 explanation + relation_type/weight 不变)
+    updated = storage.get_edge("B06", "C17")
+    assert updated is not None
+    assert updated.explanation == "矿业为制造业提供原材料"
+    assert updated.relation_type == RelationType.provide
+    assert updated.weight == 3
+
+
+@pytest.mark.asyncio
+async def test_reexplain_edge_not_found(service, storage):
+    """T4: 边不存在 -> KeyError。"""
+    # storage 空
+    with pytest.raises(KeyError):
+        await service.reexplain_edge("B06-MISS")
+
+
+@pytest.mark.asyncio
+async def test_reexplain_edge_invalid_id(service, storage):
+    """T4: edge_id 格式错(没有 -) -> KeyError。"""
+    with pytest.raises(KeyError):
+        await service.reexplain_edge("invalid")
+
+
+@pytest.mark.asyncio
+async def test_reexplain_edge_llm_unavailable(service, storage, llm_client):
+    """T4: LLM 不可用 -> LLMUnavailableError(首次失败,标记整体挂)。"""
+    edge = GraphEdge(
+        source="B06",
+        target="C17",
+        relation_type=RelationType.provide,
+        weight=3,
+        explanation="OLD",
+        status=NodeStatus.generated,
+        last_attempt_at=datetime.now(timezone.utc),
+    )
+    storage.upsert_edge(edge)
+    llm_client.generate = AsyncMock(
+        side_effect=RuntimeError("network down")
+    )
+
+    with pytest.raises(LLMUnavailableError):
+        await service.reexplain_edge("B06-C17")
+
+
+# ---------- T4 新增: GraphRepo.get_edge ----------
+
+
+def test_graph_repo_get_edge_returns_row(tmp_path):
+    """T4: GraphRepo.get_edge 返回已存的边。"""
+    repo = GraphRepo(str(tmp_path / "graph.db"))
+    edge = GraphEdge(
+        source="B06",
+        target="C17",
+        relation_type=RelationType.provide,
+        weight=4,
+        explanation="x",
+        status=NodeStatus.generated,
+        last_attempt_at=datetime.now(timezone.utc),
+    )
+    repo.upsert_edge(edge)
+    got = repo.get_edge("B06", "C17")
+    assert got is not None
+    assert got.source == "B06"
+    assert got.target == "C17"
+    assert got.weight == 4
+
+
+def test_graph_repo_get_edge_missing(tmp_path):
+    """T4: GraphRepo.get_edge 不存在 -> None."""
+    repo = GraphRepo(str(tmp_path / "graph.db"))
+    assert repo.get_edge("NOPE", "NOPE2") is None

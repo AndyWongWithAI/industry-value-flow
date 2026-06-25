@@ -326,6 +326,73 @@ class GraphService:
             f"LLM JSON 解析失败 2 次: {last_exc!s}"
         ) from last_exc
 
+    async def reexplain_edge(self, edge_id: str) -> dict:
+        """实时重新生成单条边的解释(EdgePanel "重新解释" 按钮).
+
+        edge_id 格式: "{source}-{target}" (e.g. "B06-C17").
+
+        Returns:
+            {"edge_id": ..., "explanation": ..., "generated_at": ...}
+
+        Raises:
+            KeyError: 边不存在
+            LLMUnavailableError: LLM 完全不可用
+            ValueError: LLM 两次 JSON 解析都失败
+        """
+        if "-" not in edge_id:
+            raise KeyError(f"invalid edge id format: {edge_id!r}")
+        source, target = edge_id.split("-", 1)
+        existing = self.storage.get_edge(source, target)
+        if existing is None:
+            raise KeyError(f"edge not found: {edge_id}")
+
+        # 直接调 LLM 生成新解释(用 _generate_edge 的 prompt 风格)
+        s_label = get_label_for_code(source) or source
+        t_label = get_label_for_code(target) or target
+        relation_choices = ", ".join(r.value for r in RelationType)
+        prompt = (
+            f"分析行业 {source}({s_label}) 与行业 {target}({t_label}) 之间的产业关系。\n\n"
+            f"返回严格 JSON 格式(不要 markdown,不要解释):\n"
+            f'{{"relation_type": "<{relation_choices} 中之一>", '
+            f'"weight": <1-5 整数,关系强度>, '
+            f'"explanation": "<一句话中文解释,不超过 40 字>"}}\n\n'
+            f"weight 5 = 强核心依赖,1 = 弱/偶发关联。"
+        )
+
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            raw = await self._call_llm_with_retry(prompt)
+            try:
+                data = _parse_json_strict(raw)
+                new_explanation = str(data["explanation"])
+                # 持久化新解释(只更新 explanation + last_attempt_at,
+                # 不动 relation_type/weight,避免误改拓扑)
+                updated = existing.model_copy(
+                    update={
+                        "explanation": new_explanation,
+                        "last_attempt_at": datetime.now(timezone.utc),
+                    }
+                )
+                self.storage.upsert_edge(updated)
+                # 失效缓存,让下次 init_or_load_graph 拿到新解释
+                config_hash = self._compute_config_hash()
+                self.cache.delete(f"{CACHE_KEY_PREFIX}{config_hash}")
+                return {
+                    "edge_id": edge_id,
+                    "explanation": new_explanation,
+                    "generated_at": datetime.now(timezone.utc),
+                }
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                last_exc = e
+                logger.warning(
+                    "reexplain edge %s JSON parse attempt %d failed: %s",
+                    edge_id, attempt + 1, e,
+                )
+        assert last_exc is not None
+        raise ValueError(
+            f"LLM JSON 解析失败 2 次: {last_exc!s}"
+        ) from last_exc
+
     # ---------- LLM call ----------
 
     async def _call_llm_with_retry(self, prompt: str) -> str:

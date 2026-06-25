@@ -140,6 +140,24 @@ class GraphRepo:
             )
             conn.commit()
 
+    def get_edge(self, source: str, target: str) -> GraphEdge | None:
+        """按 (source, target, relation_type) 主键取一条边.
+
+        T4: reexplain_edge 用 — 实时重解释需要先查到原边.
+        返回 list 中第一条匹配的边(理论上同 source+target 只会有一种关系
+        类型,主键带 relation_type 是为了支持未来多关系并存)。
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT source, target, relation_type, weight, explanation, "
+                "status, failed_reason, last_attempt_at FROM graph_edges "
+                "WHERE source = ? AND target = ?",
+                (source, target),
+            ).fetchone()
+        if row is None:
+            return None
+        return _row_to_edge(row)
+
     def list_edges(self) -> list[GraphEdge]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
