@@ -19,7 +19,7 @@ class TestCategoryEnum:
         # A-T (共 20 大类)
         assert len(list(Category)) == 20
 
-    def test_包含_所有_GB/T_4754_大类(self):
+    def test_包含所有GBT4754大类(self):
         expected = set("ABCDEFGHIJKLMNOPQRST")
         actual = {c.value for c in Category}
         assert actual == expected
@@ -252,10 +252,11 @@ class TestKnowledgeGraph:
         assert len(graph.edges) == 1
 
     def test_边引用不存在的source_抛_ValidationError(self):
+        # source 是合法 GB/T 代码(否则 GraphEdge 自己就报错了),但不在 nodes 列表
         nodes = [self._make_node("C17")]
         edges = [
             GraphEdge(
-                source="XX99",  # 不存在
+                source="B06",  # 合法 GB/T 代码,但不在 nodes 列表
                 target="C17",
                 relation_type=RelationType.provide,
                 weight=3,
@@ -269,14 +270,14 @@ class TestKnowledgeGraph:
                 generated_at=datetime(2026, 6, 25),
                 llm_config_hash="abc",
             )
-        assert "source" in str(exc_info.value) or "XX99" in str(exc_info.value)
+        assert "source" in str(exc_info.value) or "B06" in str(exc_info.value)
 
     def test_边引用不存在的target_抛_ValidationError(self):
         nodes = [self._make_node("C17")]
         edges = [
             GraphEdge(
                 source="C17",
-                target="XX99",  # 不存在
+                target="C18",  # 合法 GB/T 代码,但不在 nodes 列表
                 relation_type=RelationType.provide,
                 weight=3,
                 explanation="x",
@@ -289,7 +290,7 @@ class TestKnowledgeGraph:
                 generated_at=datetime(2026, 6, 25),
                 llm_config_hash="abc",
             )
-        assert "target" in str(exc_info.value) or "XX99" in str(exc_info.value)
+        assert "target" in str(exc_info.value) or "C18" in str(exc_info.value)
 
     def test_自环边_抛_ValidationError(self):
         nodes = [self._make_node("C17")]
@@ -325,11 +326,17 @@ class TestSerialization:
         assert "纺织业" in json_str
 
     def test_KnowledgeGraph_序列化为_dict(self):
-        node = GraphNode(
+        node1 = GraphNode(
             id="C17",
             label="纺织业",
             category=Category.C,
             description="x",
+        )
+        node2 = GraphNode(
+            id="B06",
+            label="煤炭",
+            category=Category.B,
+            description="y",
         )
         edge = GraphEdge(
             source="B06",
@@ -339,7 +346,7 @@ class TestSerialization:
             explanation="x",
         )
         graph = KnowledgeGraph(
-            nodes=[node],
+            nodes=[node1, node2],
             edges=[edge],
             generated_at=datetime(2026, 6, 25),
             llm_config_hash="abc",
