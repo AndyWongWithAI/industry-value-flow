@@ -1333,3 +1333,368 @@ class TestGenerateNodesByCategory:
         other = [n for n in nodes if n.category.value != "A"]
         other_gen = [n for n in other if n.status == NodeStatus.generated]
         assert len(other_gen) >= 19
+
+
+# ============================================================
+# v4 Step 1: 按 source 大类分批生成边
+# ============================================================
+
+
+def _fake_edge_payload_for_category(
+    cat_nodes: list[str], valid_codes: set[str], weight: int = 3
+) -> str:
+    """构造 LLM 返回的边 JSON 数组 — 该类下每个 source 节点给 3-5 个 target."""
+    import random
+
+    items = []
+    rng = random.Random(42)
+    for source in cat_nodes:
+        candidates = [c for c in cat_nodes if c != source]
+        if not candidates:
+            continue
+        targets = rng.sample(candidates, min(4, len(candidates)))
+        for t in targets:
+            items.append(
+                {
+                    "source": source,
+                    "target": t,
+                    "weight": weight,
+                    "explanation": f"{source} 支撑 {t}",
+                }
+            )
+    return json.dumps(items, ensure_ascii=False)
+
+
+class TestGenerateEdgesByCategory:
+    """v4: 按 GB/T 4754 20 大类(source)分批调 LLM,每类一个 call 生成边."""
+
+    @pytest.mark.asyncio
+    async def test_generate_edges_basic(self, service, llm_client):
+        """所有类正常 -> 边都 generated,supports,source/target 在 nodes 列表,weight 1-5."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    cat_codes = [
+                        item["code"]
+                        for item in GBT4754_MIDDLE_CATEGORIES
+                        if item["category"] == cat
+                    ]
+                    return _fake_edge_payload_for_category(
+                        cat_codes,
+                        set(
+                            item["code"]
+                            for item in GBT4754_MIDDLE_CATEGORIES
+                        ),
+                    )
+                return "[]"
+            return "node desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+
+        assert len(edges) > 0
+        node_ids = {n.id for n in all_nodes}
+        for e in edges:
+            assert e.status == NodeStatus.generated
+            assert e.relation_type == RelationType.supports
+            assert e.source in node_ids
+            assert e.target in node_ids
+            assert 1 <= e.weight <= 5
+
+    @pytest.mark.asyncio
+    async def test_no_self_loop(self, service, llm_client):
+        """LLM 返自环 A01 → A01 -> 这条边被拒收."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m and m.group(1) == "A":
+                    return json.dumps(
+                        [
+                            {
+                                "source": "A01",
+                                "target": "A01",
+                                "weight": 3,
+                                "explanation": "self",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+            if item["category"] == "A"
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        assert all(e.source != e.target for e in edges)
+        assert len(edges) == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_target_rejected(self, service, llm_client):
+        """LLM 返 target=X99 (不在白名单) -> 拒收."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m and m.group(1) == "A":
+                    return json.dumps(
+                        [
+                            {
+                                "source": "A01",
+                                "target": "X99",
+                                "weight": 3,
+                                "explanation": "fake",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+            if item["category"] == "A"
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        assert len(edges) == 0
+        for e in edges:
+            assert e.target != "X99"
+
+    @pytest.mark.asyncio
+    async def test_invalid_weight_rejected(self, service, llm_client):
+        """LLM 返 weight=6 或 weight=0 -> 拒收."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m and m.group(1) == "A":
+                    return json.dumps(
+                        [
+                            {
+                                "source": "A01",
+                                "target": "B06",
+                                "weight": 6,
+                                "explanation": "over",
+                            },
+                            {
+                                "source": "A01",
+                                "target": "C17",
+                                "weight": 0,
+                                "explanation": "zero",
+                            },
+                            {
+                                "source": "A01",
+                                "target": "B06",
+                                "weight": 3,
+                                "explanation": "ok",
+                            },
+                        ],
+                        ensure_ascii=False,
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        for e in edges:
+            assert 1 <= e.weight <= 5
+        assert any(e.source == "A01" and e.target == "B06" for e in edges)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_edges_dedup(self, service, llm_client):
+        """两个不同 source cat 的 prompt 都返 A01 -> B06 -> 只保留 1 条."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m and m.group(1) in ("A", "B"):
+                    return json.dumps(
+                        [
+                            {
+                                "source": "A01",
+                                "target": "B06",
+                                "weight": 3,
+                                "explanation": "shared",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        dup_count = sum(
+            1 for e in edges if e.source == "A01" and e.target == "B06"
+        )
+        assert dup_count == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_in_edge_batch(self, service, llm_client):
+        """20 类中 E 类抛异常 -> E 类 source 节点的边 = 0,其他类正常."""
+        import re
+
+        target_cat = "E"
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    if cat == target_cat:
+                        raise RuntimeError(
+                            f"simulated LLM error for cat {cat}"
+                        )
+                    cat_codes = [
+                        item["code"]
+                        for item in GBT4754_MIDDLE_CATEGORIES
+                        if item["category"] == cat
+                    ]
+                    return _fake_edge_payload_for_category(
+                        cat_codes,
+                        set(
+                            item["code"]
+                            for item in GBT4754_MIDDLE_CATEGORIES
+                        ),
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        e_codes = {
+            item["code"]
+            for item in GBT4754_MIDDLE_CATEGORIES
+            if item["category"] == "E"
+        }
+        e_edges = [e for e in edges if e.source in e_codes]
+        assert len(e_edges) == 0
+        other_edges = [e for e in edges if e.source not in e_codes]
+        assert len(other_edges) > 0
+
+    @pytest.mark.asyncio
+    async def test_target_not_in_nodes_list_rejected(
+        self, service, llm_client
+    ):
+        """LLM 返 target 引用未生成的 node (code 合法但不在传入 nodes 里) -> 拒收."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "中类节点" in prompt and "最强支撑" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m and m.group(1) == "A":
+                    return json.dumps(
+                        [
+                            {
+                                "source": "A01",
+                                "target": "B06",
+                                "weight": 3,
+                                "explanation": "ok but not in nodes",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    )
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        all_nodes = [
+            GraphNode(
+                id=item["code"],
+                label=item["label"],
+                category=Category(item["category"]),
+                description="x",
+                status=NodeStatus.generated,
+                last_attempt_at=datetime.now(timezone.utc),
+            )
+            for item in GBT4754_MIDDLE_CATEGORIES
+            if item["category"] == "A"
+        ]
+
+        edges = await service._generate_edges_by_category(all_nodes)
+        assert len(edges) == 0
