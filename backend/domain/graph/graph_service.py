@@ -316,7 +316,8 @@ class GraphService:
             # 白名单校验
             if not is_valid_middle_category_code(code):
                 # 把无效 code 也写一个 failed node(方便前端看到)
-                failed = GraphNode(
+                # model_construct 绕开 Pydantic 校验(否则 id validator 直接抛)
+                failed = GraphNode.model_construct(
                     id=code,
                     label=name or code,
                     category=Category(cat),
@@ -329,7 +330,7 @@ class GraphService:
                 continue
             if code in seen_codes:
                 # LLM 重复:标 failed
-                failed = GraphNode(
+                failed = GraphNode.model_construct(
                     id=code,
                     label=name,
                     category=Category(cat),

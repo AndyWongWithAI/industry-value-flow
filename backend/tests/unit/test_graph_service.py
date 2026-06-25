@@ -1178,3 +1178,118 @@ class TestGenerateNodesByCategory:
         assert last[2] == 20
         # 最终 generated+failed 应等于总节点数
         assert last[0] + last[1] >= 60
+
+    @pytest.mark.asyncio
+    async def test_invalid_middle_category_code_rejected(
+        self, service, llm_client
+    ):
+        """LLM 返无效 code(如 X99) -> 标 failed,不进 generated 集合."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    if cat == "A":
+                        # A 类只返 1 个有效 + 1 个无效
+                        return json.dumps(
+                            [
+                                {
+                                    "code": "A01",
+                                    "name": "农业",
+                                    "description": "ok",
+                                },
+                                {
+                                    "code": "X99",  # 不在白名单
+                                    "name": "假行业",
+                                    "description": "invalid",
+                                },
+                            ],
+                            ensure_ascii=False,
+                        )
+                    return _fake_category_payload(cat, count=5)
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        nodes = await service._generate_nodes_by_category()
+
+        # A01 应是 generated
+        a01 = next((n for n in nodes if n.id == "A01"), None)
+        assert a01 is not None
+        assert a01.status == NodeStatus.generated
+        # X99 应是 failed
+        x99 = next((n for n in nodes if n.id == "X99"), None)
+        assert x99 is not None
+        assert x99.status == NodeStatus.failed
+        assert "not in GB/T 4754 whitelist" in (x99.failed_reason or "")
+
+    @pytest.mark.asyncio
+    async def test_json_parse_failure_with_retry(
+        self, service, llm_client
+    ):
+        """LLM 第一次返 invalid JSON,第二次返 valid -> 重试后 generated."""
+        import re
+        call_count = {"n": 0}
+
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    if cat == "A":
+                        call_count["n"] += 1
+                        if call_count["n"] == 1:
+                            return "this is not JSON at all"
+                        # 第二次返有效
+                        return _fake_category_payload(cat, count=3)
+                    return _fake_category_payload(cat, count=5)
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        nodes = await service._generate_nodes_by_category()
+
+        # A 类应至少 3 个 generated
+        a_nodes = [n for n in nodes if n.category.value == "A"]
+        assert len(a_nodes) >= 3
+        a_gen = [n for n in a_nodes if n.status == NodeStatus.generated]
+        assert len(a_gen) >= 3
+        # LLM 被调了至少 2 次(第 1 次 fail + 第 2 次 succeed),其他类至少 1 次
+        assert call_count["n"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_json_parse_failure_persistent_marks_failed(
+        self, service, llm_client
+    ):
+        """LLM 两次都返 invalid JSON -> 该类全标 failed."""
+        import re
+
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    if cat == "A":
+                        return "garbage no json"
+                    return _fake_category_payload(cat, count=5)
+                return "[]"
+            return "desc"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        nodes = await service._generate_nodes_by_category()
+
+        # A 类全 failed
+        a_nodes = [n for n in nodes if n.category.value == "A"]
+        assert len(a_nodes) == 5  # 5 个 A 类中类
+        for n in a_nodes:
+            assert n.status == NodeStatus.failed
+            assert "JSON" in (n.failed_reason or "")
+        # 其他 19 类仍 generated
+        other = [n for n in nodes if n.category.value != "A"]
+        other_gen = [n for n in other if n.status == NodeStatus.generated]
+        assert len(other_gen) >= 19
