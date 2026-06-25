@@ -1,4 +1,4 @@
-import type { SankeyData, LLMGenerateResponse, Settings } from "../types/api";
+import type { Settings } from "../types/api";
 
 const BASE = "/api";
 
@@ -14,14 +14,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return resp.json();
 }
 
+// T1 阶段:旧 endpoint (getIndustries/getIndustry/generateLLM) 已删除,
+// 等待 T4 替换为 /api/graph + /api/node/{id} + /api/edge/{sid}/{tid}/explain.
+// 保留 LLM 设置相关 endpoint,因为 Settings 页仍需调用.
 export const apiClient = {
-  getIndustries: () => request<SankeyData>("/industries"),
-  getIndustry: (id: string) => request<SankeyData>(`/industry/${id}`),
-  generateLLM: (industry_id: string, force_refresh = false) =>
-    request<LLMGenerateResponse>("/llm/generate", {
-      method: "POST",
-      body: JSON.stringify({ industry_id, force_refresh }),
-    }),
   getSettings: () => request<Settings>("/settings/llm"),
   postSettings: (s: Settings) =>
     request<{ ok: boolean }>("/settings/llm", {

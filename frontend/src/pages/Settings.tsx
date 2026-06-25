@@ -1,8 +1,27 @@
 import { useEffect, useState } from "react";
 import { apiClient } from "../api/client";
-import { ProviderTabs, PROVIDERS } from "../components/ProviderTabs";
 import { Nav } from "../components/Nav";
-import type { Settings as SettingsType, LLMProviderConfig } from "../types/api";
+import type {
+  Settings as SettingsType,
+  LLMProviderConfig,
+} from "../types/api";
+
+// T1 后:ProviderTabs.tsx 已删除,此处 inline provider 配置列表.
+// T6 会重写为更友好的 UI.
+type ProviderKey = LLMProviderConfig["provider"];
+
+const PROVIDERS: Array<{
+  key: ProviderKey;
+  label: string;
+  defaultModel: string;
+  defaultBaseUrl?: string;
+}> = [
+  { key: "claude", label: "Claude", defaultModel: "claude-sonnet-4-5" },
+  { key: "openai", label: "OpenAI", defaultModel: "gpt-4o" },
+  { key: "deepseek", label: "DeepSeek", defaultModel: "deepseek-chat" },
+  { key: "minimax", label: "MiniMax", defaultModel: "MiniMax-M3" },
+  { key: "ollama", label: "Ollama(本地)", defaultModel: "llama3", defaultBaseUrl: "http://localhost:11434/v1" },
+];
 
 export function Settings() {
   const [s, setS] = useState<SettingsType | null>(null);
@@ -39,7 +58,7 @@ export function Settings() {
       <div style={{ padding: 24, maxWidth: 720 }}>
         <h1>LLM 设置</h1>
         <p style={{ color: "#666" }}>
-          配置你想用的 LLM 提供商。 点保存后生效。 痛点面板会立即用新配置重新生成。
+          配置你想用的 LLM 提供商。 点保存后生效。 知识图谱初始化会使用新配置重新生成。
         </p>
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {PROVIDERS.map((p) => (
@@ -62,13 +81,42 @@ export function Settings() {
             </button>
           ))}
         </div>
-        <ProviderTabs
-          current={activeConfig}
-          onChange={(c) => {
-            setS({ ...s, providers: { ...s.providers, [activeKey]: c } });
-            setSaved(false);
-          }}
-        />
+        {/* T1 inline ProviderTabs 功能(T6 会重写) */}
+        <div>
+          <label>
+            API Key:
+            <input
+              value={activeConfig.api_key}
+              onChange={(e) => {
+                const c = { ...activeConfig, api_key: e.target.value };
+                setS({ ...s, providers: { ...s.providers, [activeKey]: c } });
+                setSaved(false);
+              }}
+            />
+          </label>
+          <label>
+            Base URL(可选):
+            <input
+              value={activeConfig.base_url ?? ""}
+              onChange={(e) => {
+                const c = { ...activeConfig, base_url: e.target.value || null };
+                setS({ ...s, providers: { ...s.providers, [activeKey]: c } });
+                setSaved(false);
+              }}
+            />
+          </label>
+          <label>
+            Model:
+            <input
+              value={activeConfig.model}
+              onChange={(e) => {
+                const c = { ...activeConfig, model: e.target.value };
+                setS({ ...s, providers: { ...s.providers, [activeKey]: c } });
+                setSaved(false);
+              }}
+            />
+          </label>
+        </div>
         <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
           <button
             onClick={async () => {
