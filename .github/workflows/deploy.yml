@@ -1,48 +1,31 @@
 # .github/workflows/deploy.yml — industry-value-flow 生产部署
 #
+# 不自己写部署逻辑,call arch-platform 的可复用 workflow:
+#   uses: AndyWongWithAI/Architecture-Platform/.github/workflows/deploy.yml@v1
+#
 # 触发:
-#   - workflow_run:只在 ci.yml 跑完后才触发(避免 CI 没绿就部署)
-#   - workflow_dispatch:手动触发(回滚 / 紧急修复)
-#
-# 流程(SSH 到 #1 华为云):
-#   1. cd /opt/services/industry-value-flow(已 git clone 过一次)
-#   2. git pull origin master(同步最新代码)
-#   3. docker compose up -d --build(构建镜像 + 启容器)
-#   4. docker compose ps(查看容器状态)
-#   5. curl /api/settings/llm 验证 backend 可达
-#
-# 为什么用 workflow_run 而不是 push + needs:
-#   - ci.yml 里有 backend / frontend / e2e 三个 job
-#   - 用 workflow_run 类型只需 ci.yml 整体完成(任一 job 失败就不部署)
-#   - 避免在 CI 中再加 deploy job 拖慢反馈
-#
-# 为什么 SSH 到 #1 自己 git pull 而不是用 rsync:
-#   - 遵循 feedback-deploy-via-gh-actions:#1 已有 working tree,不要用 rsync 污染
-#   - git pull 干净,只更新有变化的文件
+#   - workflow_run: 只在 ci.yml 跑完后才触发(避免 CI 没绿就部署)
+#   - workflow_dispatch: 手动触发(回滚 / 紧急修复)
 #
 # Secrets(在 GitHub repo settings → Secrets):
-#   DEPLOY_HOST     = "root@124.71.219.208"
-#   DEPLOY_SSH_KEY  = #1 github-actions-deploy-arch-platform 对应私钥
-#                     (同一把 key 服务多个项目,见 ~/.claude/memory/server-1.md)
+#   SSH_USER     = "root"
+#   SSH_KEY      = ~/.ssh/github_actions_arch_platform 私钥
+#                  (一把 key 跨项目复用,见 ~/.claude/memory/server-1.md)
+#   ARCH_API_KEY = ~/.claude/secrets.json → architecture_blueprint.architecture_api_key
+#
+# 该文件极简,所有部署逻辑 + 首次 clone + healthcheck + arch 登记
+# 都在可复用 workflow 里(架构平台统一维护)。
 
 name: Deploy
 
 on:
-  # 仅在 CI 全绿后才触发部署
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [master]
-  # 手动触发(回滚 / 紧急部署)
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "部署的 git ref(默认 master)"
-        required: false
-        default: "master"
 
 concurrency:
-  # 同一时间只允许一个 deploy 跑(避免并发 git pull / docker compose up 冲突)
   group: deploy-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: false
 
@@ -53,62 +36,17 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: root
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: 22
-          command_timeout: 30m
-          script: |
-            set -e
-
-            DEPLOY_PATH="/opt/services/industry-value-flow"
-
-            # 部署目录不存在 → 引导用户手动 clone(避免自动 clone 把 #1 working tree 状态弄乱)
-            if [ ! -d "$DEPLOY_PATH/.git" ]; then
-              echo "[deploy] ERROR: $DEPLOY_PATH 不存在或不是 git 仓库"
-              echo "[deploy] 请先 SSH 到服务器手动初始化:"
-              echo "[deploy]   ssh root@124.71.219.208"
-              echo "[deploy]   mkdir -p $DEPLOY_PATH"
-              echo "[deploy]   cd $DEPLOY_PATH"
-              echo "[deploy]   git clone https://github.com/AndyWongWithAI/industry-value-flow.git ."
-              exit 1
-            fi
-
-            cd "$DEPLOY_PATH"
-
-            # 用 secrets.GITHUB_TOKEN 或直接 origin 拉(SSH key 已 authorized)
-            echo "[deploy] git fetch + reset to origin/master..."
-            git fetch origin master
-            # 强制对齐到 origin/master(本地如有手动改动会被覆盖,与 arch-platform 模式一致)
-            git reset --hard origin/master
-
-            echo "[deploy] docker compose up -d --build..."
-            docker compose up -d --build
-
-            echo "[deploy] 等待 backend 健康..."
-            # 容器 HEALTHCHECK start_period=20s,等 30s 兜底
-            sleep 30
-
-            echo "[deploy] 容器状态:"
-            docker compose ps
-
-            echo "[deploy] 健康检查:curl frontend 容器 /api/settings/llm..."
-            # frontend 容器反代 backend,所以走 frontend 端口 8081 验证整条链路
-            HEALTH=$(curl -fsS -o /tmp/ivf-health.txt -w "%{http_code}" http://127.0.0.1:8081/api/settings/llm || echo "FAIL")
-            if [ "$HEALTH" = "200" ]; then
-              echo "[deploy] ✅ 健康检查通过(GET /api/settings/llm → 200)"
-            else
-              echo "[deploy] ❌ 健康检查失败:HTTP=$HEALTH"
-              echo "[deploy] backend logs:"
-              docker compose logs --tail=50 backend
-              echo "[deploy] frontend logs:"
-              docker compose logs --tail=50 frontend
-              exit 1
-            fi
-
-            echo "[deploy] 部署完成"
+    uses: AndyWongWithAI/Architecture-Platform/.github/workflows/deploy.yml@v1.0.1
+    with:
+      host: "124.71.219.208"
+      service_name: "industry-value-flow"
+      deploy_path: "/opt/services/industry-value-flow"
+      compose_file: "docker-compose.yml"
+      healthcheck_url: "http://127.0.0.1:8081/api/settings/llm"
+      arch_component: "industry-value-flow"
+      arch_platform_url: "https://arch.intelab.cn"
+      git_ref: "master"
+    secrets:
+      ssh_user: ${{ secrets.SSH_USER }}
+      ssh_key: ${{ secrets.SSH_KEY }}
+      arch_api_key: ${{ secrets.ARCH_API_KEY }}
