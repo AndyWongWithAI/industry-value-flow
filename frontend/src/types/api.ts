@@ -28,6 +28,7 @@ export interface GraphNode {
 
 /** 行业间关系(边) */
 export interface GraphEdge {
+  id?: string;                         // 后端合成的边 id(形如 "B06-C17");fallback 用 source-target
   source: string;                      // 起点节点 id
   target: string;                      // 终点节点 id
   relation_type: RelationType;         // 关系类型

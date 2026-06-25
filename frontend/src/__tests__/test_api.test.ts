@@ -6,7 +6,7 @@ import {
   getEdge,
   getGraphStats,
   regenerateFailed,
-  reExplainEdge,
+  explainEdge,
   LLMUnavailableError,
 } from "../lib/api";
 
@@ -31,13 +31,13 @@ describe("lib/api (mock mode)", () => {
     expect(missing).toBeNull();
   });
 
-  it("getEdge returns the matching edge or null", async () => {
-    const e = await getEdge("B06", "D44");
+  it("getEdge returns the matching edge by edgeId (source-target) or null", async () => {
+    const e = await getEdge("B06-D44");
     expect(e).not.toBeNull();
     expect(e!.source).toBe("B06");
     expect(e!.target).toBe("D44");
 
-    const missing = await getEdge("B06", "C99");
+    const missing = await getEdge("B06-C99");
     expect(missing).toBeNull();
   });
 
@@ -51,8 +51,8 @@ describe("lib/api (mock mode)", () => {
     expect(r.job_id).toBeTruthy();
   });
 
-  it("reExplainEdge returns an explanation string", async () => {
-    const r = await reExplainEdge("B06", "D44");
+  it("explainEdge returns an explanation string", async () => {
+    const r = await explainEdge("B06-D44");
     expect(typeof r.explanation).toBe("string");
   });
 

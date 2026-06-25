@@ -8,10 +8,10 @@ import {
   getGraph,
   getGraphStats,
   regenerateFailed,
-  reExplainEdge,
+  explainEdge,
   LLMUnavailableError,
   type ApiRegenerateFailedFn,
-  type ApiReExplainEdgeFn,
+  type ApiExplainEdgeFn,
 } from "../lib/api-helpers";
 import type { GraphEdge, GraphNode, KnowledgeGraph } from "../types/api";
 
@@ -53,7 +53,7 @@ export interface GraphPageProps {
     getGraph: typeof getGraph;
     getGraphStats?: typeof getGraphStats;
     regenerateFailed?: ApiRegenerateFailedFn;
-    reExplainEdge?: ApiReExplainEdgeFn;
+    explainEdge?: ApiExplainEdgeFn;
   };
 }
 
@@ -62,7 +62,7 @@ export function GraphPage(props: GraphPageProps = {}) {
     getGraph,
     getGraphStats,
     regenerateFailed,
-    reExplainEdge: reExplainEdge as ApiReExplainEdgeFn,
+    explainEdge: explainEdge as ApiExplainEdgeFn,
   };
 
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
@@ -137,9 +137,10 @@ export function GraphPage(props: GraphPageProps = {}) {
   const handleReExplain = async () => {
     if (!selectedEdge) return;
     setReExplaining(true);
+    const edgeId = selectedEdge.id ?? `${selectedEdge.source}-${selectedEdge.target}`;
     try {
-      if (api.reExplainEdge) {
-        await api.reExplainEdge(selectedEdge.source, selectedEdge.target);
+      if (api.explainEdge) {
+        await api.explainEdge(edgeId);
       }
       // stub 模式:更新当前边的 explanation
       setSelectedEdge((prev) =>

@@ -6,7 +6,7 @@ export {
   getEdge,
   getGraphStats,
   regenerateFailed,
-  reExplainEdge,
+  explainEdge,
   LLMUnavailableError,
 } from "./api";
 import type { KnowledgeGraph } from "../types/api";
@@ -15,9 +15,8 @@ export type ApiRegenerateFailedFn = (
   scope?: "all" | "nodes" | "edges"
 ) => Promise<{ job_id: string }>;
 
-export type ApiReExplainEdgeFn = (
-  source: string,
-  target: string
+export type ApiExplainEdgeFn = (
+  edgeId: string
 ) => Promise<{ explanation: string }>;
 
 export type ApiGetGraphFn = () => Promise<KnowledgeGraph>;

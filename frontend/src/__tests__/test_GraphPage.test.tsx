@@ -8,7 +8,7 @@ import {
   LLMUnavailableError,
   type ApiGetGraphFn,
   type ApiRegenerateFailedFn,
-  type ApiReExplainEdgeFn,
+  type ApiExplainEdgeFn,
 } from "../lib/api-helpers";
 import type { KnowledgeGraph } from "../types/api";
 
@@ -212,12 +212,12 @@ describe("GraphPage 集成", () => {
   it("NodePanel 入边点击 → EdgePanel 出现 + 重新解释按钮触发 API", async () => {
     // 走 NodePanel 内部 onEdgeClick 路径,绕开 react-flow jsdom 边点击限制
     const getGraph = vi.fn<ApiGetGraphFn>(async () => GRAPH);
-    const reExplainEdge = vi.fn<ApiReExplainEdgeFn>(async () => ({
+    const explainEdge = vi.fn<ApiExplainEdgeFn>(async () => ({
       explanation: "新解释",
     }));
     render(
       <MemoryRouter>
-        <GraphPage api={{ getGraph, reExplainEdge }} />
+        <GraphPage api={{ getGraph, explainEdge }} />
       </MemoryRouter>
     );
     await screen.findByTestId("graph-node-电力、热力生产和供应业");
@@ -233,7 +233,7 @@ describe("GraphPage 集成", () => {
     // 重新解释按钮
     fireEvent.click(screen.getByTestId("edge-panel-reexplain"));
     await waitFor(() => {
-      expect(reExplainEdge).toHaveBeenCalled();
+      expect(explainEdge).toHaveBeenCalled();
     });
   });
 });

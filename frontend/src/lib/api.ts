@@ -159,8 +159,7 @@ export function getNode(id: string): Promise<KnowledgeGraph["nodes"][number] | n
 
 /** 拉取单边详情 — 当前用 getGraph() 内查 */
 export function getEdge(
-  source: string,
-  target: string
+  edgeId: string
 ): Promise<KnowledgeGraph["edges"][number] | null> {
   if (useMock) {
     return new Promise((resolve) =>
@@ -168,7 +167,9 @@ export function getEdge(
         () =>
           resolve(
             MOCK_GRAPH.edges.find(
-              (e) => e.source === source && e.target === target
+              (e) =>
+                (e as { id?: string }).id === edgeId ||
+                `${e.source}-${e.target}` === edgeId
             ) ?? null
           ),
         30
@@ -176,7 +177,7 @@ export function getEdge(
     );
   }
   return request<KnowledgeGraph["edges"][number]>(
-    `/edge/${encodeURIComponent(source)}/${encodeURIComponent(target)}`
+    `/edge/${encodeURIComponent(edgeId)}`
   );
 }
 
@@ -203,23 +204,22 @@ export function regenerateFailed(_scope: "all" | "nodes" | "edges" = "all"): Pro
   });
 }
 
-/** 重新解释单边(T4: GET /api/edge/{sid}/{tid}/explain) */
-export function reExplainEdge(
-  source: string,
-  target: string
+/** 重新解释单边(T4: GET /api/edge/{edgeId}/explain,edgeId 形如 "B06-C17"). */
+export function explainEdge(
+  edgeId: string
 ): Promise<{ explanation: string }> {
   if (useMock) {
     return new Promise((resolve) =>
       setTimeout(
         () =>
           resolve({
-            explanation: `[重新生成] ${source} 与 ${target} 的关系解释...`,
+            explanation: `[重新生成] ${edgeId} 的关系解释...`,
           }),
         30
       )
     );
   }
   return request<{ explanation: string }>(
-    `/edge/${encodeURIComponent(source)}/${encodeURIComponent(target)}/explain`
+    `/edge/${encodeURIComponent(edgeId)}/explain`
   );
 }
