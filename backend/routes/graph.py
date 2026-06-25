@@ -85,8 +85,7 @@ async def get_graph(
         )
     stats = svc.compute_stats(graph)
     return {
-        "nodes": [n.model_dump(mode="json") for n in graph.nodes],
-        "edges": [e.model_dump(mode="json") for e in graph.edges],
+        **graph.model_dump(mode="json"),
         "stats": stats.model_dump(mode="json"),
     }
 
@@ -192,8 +191,7 @@ async def regenerate_failed(
         return _err(503, error="llm_unavailable", message="请配置 LLM")
     stats = svc.compute_stats(graph)
     return {
-        "nodes": [n.model_dump(mode="json") for n in graph.nodes],
-        "edges": [e.model_dump(mode="json") for e in graph.edges],
+        **graph.model_dump(mode="json"),
         "stats": stats.model_dump(mode="json"),
     }
 

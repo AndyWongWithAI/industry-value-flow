@@ -25,11 +25,6 @@ export function Nav() {
       <Link to="/settings" style={linkStyle(pathname === "/settings")}>
         ⚙️ LLM 设置
       </Link>
-      {pathname.startsWith("/industry/") && (
-        <Link to="/" style={linkStyle(false)}>
-          ← 返回行业列表
-        </Link>
-      )}
     </nav>
   );
 }
