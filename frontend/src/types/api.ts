@@ -77,3 +77,11 @@ export interface KnowledgeGraph {
   llm_config_hash: string;             // 生成时 LLM config hash
   schema_version: "v1";
 }
+
+/** 图生成统计(用于 partial failure 状态条,见 spec §4.4) */
+export interface GraphStats {
+  generated: number;
+  failed: number;
+  total: number;
+  pending: number;
+}
