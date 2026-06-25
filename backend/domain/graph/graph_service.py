@@ -52,23 +52,9 @@ logger = logging.getLogger(__name__)
 CACHE_KEY_PREFIX = "graph:v2:"
 CACHE_TTL_SECONDS = 7 * 24 * 3600
 
-# 启动时生成节点的范围 — T3 MVP 选一个有代表性的子集(10 个左右)
-# 全部 96 个太慢;留 T4 让用户选择子集。
-# 选 8 个跨类核心:农业(投入)、制造业、采矿业(投入)、电力(投入)、
-# 批发零售、运输、金融、商务服务
-DEFAULT_NODE_CODES: list[str] = [
-    "A01",  # 农业
-    "B06",  # 煤炭开采
-    "B07",  # 石油天然气
-    "C17",  # 纺织业
-    "C26",  # 化学原料
-    "D44",  # 电力热力
-    "F51",  # 批发业
-    "G54",  # 道路运输
-    "I65",  # 软件信息技术
-    "J66",  # 货币金融
-    "L72",  # 商务服务业
-]
+# 默认节点集 — v3(2026-06-25)改为空,走 category 分批路径生成完整 96 节点
+# 单测想用 legacy 逐 code 路径,显式传 node_codes=[...] 给 GraphService 即可。
+DEFAULT_NODE_CODES: list[str] = []
 
 
 class LLMUnavailableError(Exception):
@@ -257,6 +243,12 @@ class GraphService:
                     on_progress(progress_gen, progress_fail, total)
                 except Exception as e:  # pragma: no cover
                     logger.warning("on_progress callback raised: %s", e)
+        # 如果所有 20 类都 failed,说明 LLM 整体不可用 — 抛 LLMUnavailableError
+        # (保留 v2 行为:让前端显示"请配置 LLM")
+        if progress_gen == 0 and progress_fail > 0 and not self._llm_ever_succeeded:
+            raise LLMUnavailableError(
+                "LLM 不可用: 20 大类全部 failed。请检查 LLM 配置。"
+            )
         return all_nodes
 
     async def _llm_generate_category(
@@ -382,27 +374,37 @@ class GraphService:
         return result
 
     async def _generate_full_graph(self, config_hash: str) -> KnowledgeGraph:
-        """全图生成:逐个 node,逐个 edge(可能边之间相互依赖),立即持久化."""
+        """全图生成:按 GB/T 4754 20 大类分批调 LLM(每个 category 一次)。
+
+        v3(2026-06-25):不再逐 code 调 LLM。生产默认走 category 分批
+        路径(完整 96 节点);legacy 路径(逐 code)仅在显式设置
+        ``node_codes`` 时使用(单元测试用)。
+        """
         nodes: list[GraphNode] = []
         edges: list[GraphEdge] = []
 
-        # 1) 节点
-        for code in self.node_codes:
-            try:
-                node = await self._generate_node(code)
-            except LLMUnavailableError:
-                # LLM 整体挂 -> 立刻抛,partial state 已持久化(直到失败的)
-                raise
-            except TransientLLMError as e:
-                # 瞬断:标记 failed + 持久化,继续下一个
-                logger.warning("node %s transient failure: %s", code, e)
-                node = _make_failed_node(code, str(e))
-            except Exception as e:
-                # JSON 解析错误 / ValidationError 等也走这里
-                logger.warning("node %s generation failed: %s", code, e)
-                node = _make_failed_node(code, str(e))
-            self.storage.upsert_node(node)
-            nodes.append(node)
+        # 1) 节点 — 选 category 分批(默认)或 legacy 逐 code(测试用)
+        if self.node_codes:
+            # legacy 路径 — 单 code 调 LLM,用于 unit test 验证
+            for code in self.node_codes:
+                try:
+                    node = await self._generate_node(code)
+                except LLMUnavailableError:
+                    # LLM 整体挂 -> 立刻抛,partial state 已持久化(直到失败的)
+                    raise
+                except TransientLLMError as e:
+                    # 瞬断:标记 failed + 持久化,继续下一个
+                    logger.warning("node %s transient failure: %s", code, e)
+                    node = _make_failed_node(code, str(e))
+                except Exception as e:
+                    # JSON 解析错误 / ValidationError 等也走这里
+                    logger.warning("node %s generation failed: %s", code, e)
+                    node = _make_failed_node(code, str(e))
+                self.storage.upsert_node(node)
+                nodes.append(node)
+        else:
+            # v3 category 分批路径 — 生产默认,完整 96 节点
+            nodes = await self._generate_nodes_by_category()
 
         # 2) 边:基于已生成(generated + failed 都算"已知")节点对
         # T3 MVP:成对生成(n*(n-1)/2 太慢;我们选相邻的"价值链"对)

@@ -160,8 +160,16 @@ class TestInitCacheMiss:
     ):
         """cache miss:调 LLM,生成完整图,写缓存,DB 也有数据."""
 
-        # 让 LLM 返回合理结果(节点用纯文本,边用 JSON)
+        import re
+
+        # 让 LLM 返回合理结果(category prompt 返 JSON 数组,边 prompt 返 JSON,其它返文本)
         async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                # category prompt:返该类中类 JSON 数组
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    return _fake_category_payload(m.group(1), count=5)
+                return "[]"
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
                     {
@@ -178,11 +186,12 @@ class TestInitCacheMiss:
 
         result = await service.init_or_load_graph()
 
-        # 节点都生成了
+        # 节点都生成了(category 路径下,默认空 node_codes -> 完整 96 节点)
         assert all(n.status == NodeStatus.generated for n in result.nodes)
         assert all(e.status == NodeStatus.generated for e in result.edges)
-        # LLM 被调了 >= node 数量
-        assert llm_client.generate.call_count >= len(service.node_codes)
+        # LLM 被调了 >= node 数量(20 category + N edges)
+        assert llm_client.generate.call_count >= 20
+        assert len(result.nodes) > 0
         # cache 写了
         cache_key = f"graph:v2:{service._compute_config_hash()}"
         assert cache.get(cache_key) is not None
@@ -496,8 +505,14 @@ class TestInitIdempotent:
         self, service, llm_client
     ):
         """重复调 init_or_load_graph:第二次应走 cache,不调 LLM."""
+        import re
 
         async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    return _fake_category_payload(m.group(1), count=5)
+                return "[]"
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
                     {"relation_type": "supports", "weight": 3, "explanation": "x"},
@@ -573,7 +588,14 @@ class TestEdgeCases:
         cache_key = f"graph:v2:{service._compute_config_hash()}"
         cache.set(cache_key, {"garbage": "data"}, ttl_seconds=7 * 24 * 3600)
 
+        import re
+
         async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    return _fake_category_payload(m.group(1), count=5)
+                return "[]"
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
                     {"relation_type": "supports", "weight": 3, "explanation": "x"},
@@ -754,7 +776,14 @@ class TestEdgeCases:
 
         monkeypatch.setattr(cache, "set", broken_set)
 
+        import re
+
         async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    return _fake_category_payload(m.group(1), count=5)
+                return "[]"
             if "严格 JSON" in prompt or '"relation_type"' in prompt:
                 return json.dumps(
                     {"relation_type": "supports", "weight": 3, "explanation": "x"},
