@@ -1249,11 +1249,22 @@ class TestGenerateNodesByCategory:
         a01 = next((n for n in nodes if n.id == "A01"), None)
         assert a01 is not None
         assert a01.status == NodeStatus.generated
-        # X99 应是 failed
+        # X99(LLM 幻觉,无效 code):不返也不持久化(防御:避免 graph_repo
+        # 加载时一行坏数据 500 整个 /api/graph)。
         x99 = next((n for n in nodes if n.id == "X99"), None)
-        assert x99 is not None
-        assert x99.status == NodeStatus.failed
-        assert "not in GB/T 4754 whitelist" in (x99.failed_reason or "")
+        assert x99 is None, "invalid code should be silently skipped"
+        # storage 里也不应有 X99
+        assert service.storage.get_node("X99") is None
+        # 但其他 19 类的有效 nodes 都应 generated(_fake_category_payload 每类最多 5 个
+        # 实际随 whitelist 数量变化)。宽松断言:总节点数 > 50(覆盖大部分)
+        # 且不含 X99,不含其他非白名单的 code。
+        assert len(nodes) > 50, (
+            f"expected > 50 valid nodes, got {len(nodes)}"
+        )
+        # 验证所有 node id 都在白名单(LLM 幻觉的全被跳过)
+        valid_ids = {item["code"] for item in GBT4754_MIDDLE_CATEGORIES}
+        for n in nodes:
+            assert n.id in valid_ids, f"non-whitelist id leaked: {n.id}"
 
     @pytest.mark.asyncio
     async def test_json_parse_failure_with_retry(

@@ -307,31 +307,21 @@ class GraphService:
                 continue
             # 白名单校验
             if not is_valid_middle_category_code(code):
-                # 把无效 code 也写一个 failed node(方便前端看到)
-                # model_construct 绕开 Pydantic 校验(否则 id validator 直接抛)
-                failed = GraphNode.model_construct(
-                    id=code,
-                    label=name or code,
-                    category=Category(cat),
-                    description="",
-                    status=NodeStatus.failed,
-                    failed_reason=f"code {code!r} not in GB/T 4754 whitelist",
-                    last_attempt_at=datetime.now(timezone.utc),
+                # LLM 幻觉:给的 code 不在 GB/T 4754 真实中类清单里。
+                # 既不返回也不持久化 — 之前用 model_construct 绕开校验
+                # 写库,导致 graph_repo 加载时 validator 拒收,整个 /api/graph
+                # 返 500。前端会少看到几个 failed,但图能正确渲染。
+                logger.warning(
+                    "category %s: LLM returned invalid code %r, skipping",
+                    cat, code,
                 )
-                result.append(failed)
                 continue
             if code in seen_codes:
-                # LLM 重复:标 failed
-                failed = GraphNode.model_construct(
-                    id=code,
-                    label=name,
-                    category=Category(cat),
-                    description="",
-                    status=NodeStatus.failed,
-                    failed_reason=f"duplicate code {code!r} in LLM response",
-                    last_attempt_at=datetime.now(timezone.utc),
+                # LLM 重复:同上,既不返回也不持久化
+                logger.warning(
+                    "category %s: LLM returned duplicate code %r, skipping",
+                    cat, code,
                 )
-                result.append(failed)
                 continue
             seen_codes.add(code)
             cat_for_code = get_category_for_code(code) or cat

@@ -104,7 +104,8 @@ class GraphRepo:
                 "SELECT id, label, category, description, status, "
                 "failed_reason, last_attempt_at FROM graph_nodes"
             ).fetchall()
-        return [_row_to_node(r) for r in rows]
+        # 防御:跳过任何无法构造为 GraphNode 的坏行(避免一行坏数据 500 整个图)
+        return [n for n in (_row_to_node(r) for r in rows) if n is not None]
 
     def list_failed_nodes(self) -> list[GraphNode]:
         with sqlite3.connect(self.db_path) as conn:
@@ -270,19 +271,28 @@ class GraphRepo:
 # ---------- helpers ----------
 
 
-def _row_to_node(row: tuple) -> GraphNode:
+def _row_to_node(row: tuple) -> GraphNode | None:
+    """从 DB row 构造 GraphNode。如果 row 数据不合法(防御,正常路径不会发生)
+    返回 None,调用方应跳过。"""
     node_id, label, category, description, status, failed_reason, last_attempt_at = row
-    return GraphNode(
-        id=node_id,
-        label=label,
-        category=category,
-        description=description,
-        status=NodeStatus(status),
-        failed_reason=failed_reason,
-        last_attempt_at=(
-            datetime.fromisoformat(last_attempt_at) if last_attempt_at else None
-        ),
-    )
+    try:
+        return GraphNode(
+            id=node_id,
+            label=label,
+            category=category,
+            description=description,
+            status=NodeStatus(status),
+            failed_reason=failed_reason,
+            last_attempt_at=(
+                datetime.fromisoformat(last_attempt_at) if last_attempt_at else None
+            ),
+        )
+    except Exception as e:  # pragma: no cover (defense in depth)
+        # 不让一行坏数据炸整个 /api/graph。记 warn,跳这行。
+        logger.warning(
+            "graph_repo: skipping invalid row id=%r: %s", node_id, e
+        )
+        return None
 
 
 def _row_to_edge(row: tuple) -> GraphEdge:
