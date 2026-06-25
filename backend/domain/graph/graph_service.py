@@ -18,6 +18,7 @@ T3 spec (3.1):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -30,6 +31,7 @@ from domain.llm.base import LLMProviderProtocol
 from domain.storage.cache import Cache
 from domain.storage.graph_repo import GraphRepo
 from schema.gbt4754 import (
+    GBT4754_MIDDLE_CATEGORIES,
     get_category_for_code,
     get_label_for_code,
     is_valid_middle_category_code,
@@ -203,6 +205,180 @@ class GraphService:
         )
 
     # ---------- generation (private) ----------
+
+    async def _generate_nodes_by_category(
+        self, on_progress: Any | None = None
+    ) -> list[GraphNode]:
+        """按 GB/T 4754 20 大类并行调 LLM,每类一个 call.
+
+        Returns:
+            所有生成的节点(成功的 + 失败的)。
+            每个成功的立即 upsert 到 storage(partial state 持久化)。
+
+        Args:
+            on_progress: 可选 callback(generated, failed, total),
+                在每个 node 持久化后调用,用于前端 StatusBar 进度。
+        """
+        categories = _all_categories()  # [(cat, name), ...] x 20
+        total = len(categories)
+        progress_gen = 0
+        progress_fail = 0
+        # 并行调 20 次 LLM(每类一次)
+        results = await asyncio.gather(
+            *[self._llm_generate_category(cat, name) for cat, name in categories],
+            return_exceptions=True,
+        )
+        all_nodes: list[GraphNode] = []
+        for (cat, _name), res in zip(categories, results, strict=True):
+            if isinstance(res, Exception):
+                # 整个 category call 抛异常(LLM 瞬断等):该类所有节点都标 failed
+                logger.warning("category %s batch failed: %s", cat, res)
+                # 拿白名单里该类所有中类代码,标 failed
+                for item in GBT4754_MIDDLE_CATEGORIES:
+                    if item["category"] != cat:
+                        continue
+                    failed = _make_failed_node(
+                        item["code"], f"category batch failed: {res!s}"
+                    )
+                    self.storage.upsert_node(failed)
+                    all_nodes.append(failed)
+                    progress_fail += 1
+            else:
+                # res 是 list[GraphNode],成功的 + 失败的混合
+                for node in res:
+                    self.storage.upsert_node(node)
+                    all_nodes.append(node)
+                    if node.status == NodeStatus.generated:
+                        progress_gen += 1
+                    else:
+                        progress_fail += 1
+            if on_progress is not None:
+                try:
+                    on_progress(progress_gen, progress_fail, total)
+                except Exception as e:  # pragma: no cover
+                    logger.warning("on_progress callback raised: %s", e)
+        return all_nodes
+
+    async def _llm_generate_category(
+        self, cat: str, cat_name: str
+    ) -> list[GraphNode]:
+        """单次 LLM call:返回该大类下所有中类节点(成功的 generated,失败的 failed).
+
+        Robust 策略:
+        - JSON 解析错误:重试 1 次(让 LLM 看到同一个 prompt 重新生成)
+        - 中类代码不在白名单:标 failed(不抛,让上层 partial state 持久化)
+        - 2 次都失败:返空 list(上层 gather 会收到 Exception if 调用方 raise,这里不 raise)
+        """
+        prompt = _build_category_prompt(cat, cat_name)
+        items: list[dict[str, Any]] = []
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                raw = await self._call_llm_with_retry(prompt)
+                parsed = _parse_json_strict(raw)
+                if not isinstance(parsed, list):
+                    raise ValueError(
+                        f"expected JSON array, got {type(parsed).__name__}"
+                    )
+                items = parsed
+                break
+            except (json.JSONDecodeError, ValueError) as e:
+                last_exc = e
+                logger.warning(
+                    "category %s parse attempt %d failed: %s",
+                    cat, attempt + 1, e,
+                )
+        if not items and last_exc is not None:
+            # 2 次都失败:把白名单里该类所有中类都标 failed
+            failed_nodes: list[GraphNode] = []
+            for item in GBT4754_MIDDLE_CATEGORIES:
+                if item["category"] != cat:
+                    continue
+                failed_nodes.append(
+                    _make_failed_node(
+                        item["code"], f"LLM JSON 解析失败 2 次: {last_exc!s}"
+                    )
+                )
+            return failed_nodes
+        # items 解析成功:转 GraphNode,白名单校验失败的标 failed
+        result: list[GraphNode] = []
+        seen_codes: set[str] = set()
+        for it in items:
+            try:
+                code = str(it.get("code", ""))
+                name = str(it.get("name", ""))
+                desc = str(it.get("description", ""))
+            except (AttributeError, TypeError) as e:
+                logger.warning("category %s item shape error: %s", cat, e)
+                continue
+            if not code or not name:
+                continue
+            # 白名单校验
+            if not is_valid_middle_category_code(code):
+                # 把无效 code 也写一个 failed node(方便前端看到)
+                failed = GraphNode(
+                    id=code,
+                    label=name or code,
+                    category=Category(cat),
+                    description="",
+                    status=NodeStatus.failed,
+                    failed_reason=f"code {code!r} not in GB/T 4754 whitelist",
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+                result.append(failed)
+                continue
+            if code in seen_codes:
+                # LLM 重复:标 failed
+                failed = GraphNode(
+                    id=code,
+                    label=name,
+                    category=Category(cat),
+                    description="",
+                    status=NodeStatus.failed,
+                    failed_reason=f"duplicate code {code!r} in LLM response",
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+                result.append(failed)
+                continue
+            seen_codes.add(code)
+            cat_for_code = get_category_for_code(code) or cat
+            # 业务校验:LLM 给的 category 与 code 的真实 category 不一致 -> failed
+            if cat_for_code != cat:
+                failed = GraphNode(
+                    id=code,
+                    label=name,
+                    category=Category(cat_for_code),
+                    description="",
+                    status=NodeStatus.failed,
+                    failed_reason=(
+                        f"category mismatch: code {code!r} belongs to {cat_for_code}, "
+                        f"not {cat}"
+                    ),
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+                result.append(failed)
+                continue
+            result.append(
+                GraphNode(
+                    id=code,
+                    label=name,
+                    category=Category(cat_for_code),
+                    description=desc,
+                    status=NodeStatus.generated,
+                    last_attempt_at=datetime.now(timezone.utc),
+                )
+            )
+        # 兜底:LLM 没返任何 item 或全被白名单拒收 -> 标 failed
+        if not result:
+            for item in GBT4754_MIDDLE_CATEGORIES:
+                if item["category"] != cat:
+                    continue
+                result.append(
+                    _make_failed_node(
+                        item["code"], "LLM 返回空 / 全部白名单拒收"
+                    )
+                )
+        return result
 
     async def _generate_full_graph(self, config_hash: str) -> KnowledgeGraph:
         """全图生成:逐个 node,逐个 edge(可能边之间相互依赖),立即持久化."""
@@ -510,3 +686,56 @@ def _build_default_edge_pairs(node_ids: list[str]) -> list[tuple[str, str]]:
     # 截断到前 N 对,避免 n*(n-1)/2 过大
     # 11 节点 -> 55 对,MVP 截到 12 对
     return pairs[:12]
+
+
+# GB/T 4754-2017 大类名称(20 大类) — 用于 LLM prompt
+# 顺序:枚举 Category 的字母顺序
+_GBT4754_CATEGORY_NAMES: dict[str, str] = {
+    "A": "农、林、牧、渔业",
+    "B": "采矿业",
+    "C": "制造业",
+    "D": "电力、热力、燃气及水生产和供应业",
+    "E": "建筑业",
+    "F": "批发和零售业",
+    "G": "交通运输、仓储和邮政业",
+    "H": "住宿和餐饮业",
+    "I": "信息传输、软件和信息技术服务业",
+    "J": "金融业",
+    "K": "房地产业",
+    "L": "租赁和商务服务业",
+    "M": "科学研究和技术服务业",
+    "N": "水利、环境和公共设施管理业",
+    "O": "居民服务、修理和其他服务业",
+    "P": "教育",
+    "Q": "卫生和社会工作",
+    "R": "文化、体育和娱乐业",
+    "S": "公共管理、社会保障和社会组织",
+    "T": "国际组织",
+}
+
+
+def _all_categories() -> list[tuple[str, str]]:
+    """返回 [(cat, name), ...] for all 20 GB/T 4754 categories."""
+    return [(cat.value, _GBT4754_CATEGORY_NAMES[cat.value]) for cat in Category]
+
+
+def _build_category_prompt(cat: str, cat_name: str) -> str:
+    """构造单次 LLM call 的 prompt — 列出该大类下所有中类."""
+    return (
+        f"列出 GB/T 4754-2017 国民经济行业分类中,"
+        f"【{cat_name} ({cat})】大类下的所有中类。\n\n"
+        f"输出要求(JSON 数组,不要 markdown 围栏):\n"
+        f"[\n"
+        f"  {{\n"
+        f'    "code": "{cat}01",          // 中类代码(字母+2位数字)\n'
+        f'    "name": "农业",              // 中类名称\n'
+        f'    "description": "..."        // 一句话描述(20-50 字)\n'
+        f"  }},\n"
+        f"  ...\n"
+        f"]\n\n"
+        f"注意:\n"
+        f"- 严格按 GB/T 4754-2017 实际中类清单(中类代码格式:字母+2位数字)\n"
+        f"- 数量上,参考实际分类(每类 3-8 个中类)\n"
+        f"- description 简短,说清中类做什么,不写「包括但不限于」等废话\n"
+        f"- 只输出 JSON,不要解释/前言/后语"
+    )

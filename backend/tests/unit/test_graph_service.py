@@ -1029,3 +1029,79 @@ def test_graph_repo_get_edge_missing(tmp_path):
     """T4: GraphRepo.get_edge 不存在 -> None."""
     repo = GraphRepo(str(tmp_path / "graph.db"))
     assert repo.get_edge("NOPE", "NOPE2") is None
+
+
+# ============================================================
+# v3 Step 1: 按 20 大类分批 LLM 生成节点
+# ============================================================
+
+
+# 测试用:每类返 3-5 个节点(让 sum ≈ 60-100)
+def _fake_category_payload(cat: str, count: int) -> str:
+    """构造 LLM 返回的 JSON 数组(每类 count 个有效中类)."""
+    # 从 gbt4754 挑 cat 类的有效代码
+    valid = [
+        item["code"]
+        for item in GBT4754_MIDDLE_CATEGORIES
+        if item["category"] == cat
+    ][:count]
+    items = [
+        {
+            "code": code,
+            "name": next(
+                item["label"]
+                for item in GBT4754_MIDDLE_CATEGORIES
+                if item["code"] == code
+            ),
+            "description": f"{cat} 类 {code} 描述",
+        }
+        for code in valid
+    ]
+    return json.dumps(items, ensure_ascii=False)
+
+
+class TestGenerateNodesByCategory:
+    """v3: 按 GB/T 4754 20 大类分批调 LLM,每类一个 call."""
+
+    @pytest.mark.asyncio
+    async def test_generate_nodes_by_category_succeeds_for_all_20_categories(
+        self, service, llm_client
+    ):
+        """20 大类全部成功 -> 生成 ~96 个 generated 节点,无 failed."""
+        # LLM 收到 category prompt 时,返该类的中类列表 JSON
+        # 其它 prompt(节点描述)时,返普通文本
+        async def fake_generate(prompt: str) -> str:
+            if "GB/T 4754" in prompt and "中类" in prompt:
+                # 抽 cat: prompt 形如 "...【{cat_name} ({cat})】..."
+                # 简单解析:取 (X) 格式
+                import re
+
+                m = re.search(r"\(([A-T])\)", prompt)
+                if m:
+                    cat = m.group(1)
+                    return _fake_category_payload(cat, count=5)
+                return "[]"
+            if "严格 JSON" in prompt or '"relation_type"' in prompt:
+                return json.dumps(
+                    {"weight": 3, "explanation": "x"},
+                    ensure_ascii=False,
+                )
+            return "description text"
+
+        llm_client.generate = AsyncMock(side_effect=fake_generate)
+
+        nodes = await service._generate_nodes_by_category()
+
+        # 20 类全过,每类 5 个 → 100 (实际数据每类数量不同,这里用 _fake 5)
+        assert len(nodes) >= 60
+        # 全部 generated
+        statuses = {n.status for n in nodes}
+        assert statuses == {NodeStatus.generated}, f"unexpected statuses: {statuses}"
+        # 20 大类全覆盖
+        cats = {n.category.value for n in nodes}
+        assert len(cats) == 20, f"expected 20 categories, got {sorted(cats)}"
+        # DB 持久化了
+        for n in nodes:
+            stored = service.storage.get_node(n.id)
+            assert stored is not None
+            assert stored.status == NodeStatus.generated
