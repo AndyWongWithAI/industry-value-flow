@@ -8,7 +8,12 @@ import {
   regenerateFailed,
   explainEdge,
   LLMUnavailableError,
+  useMock,
 } from "../lib/api";
+
+// vitest 默认 isolate=true,每个 test file 是独立 module graph,
+// setup.ts 改的 useMock 不会跨文件传递。这里显式设回 mock 模式。
+useMock.value = true;
 
 afterEach(() => {
   vi.restoreAllMocks();

@@ -9,15 +9,27 @@ import type { GraphStats, KnowledgeGraph } from "../types/api";
  *  - 不在本文件做缓存/重试(spec 没要求,后续由 GraphPage 决定)
  *  - 错误类型:LLMUnavailableError(LLM 没配置/服务不可用) + 通用 Error
  *
- * 切到真实后端时:
- *  - 把 `useMock` 改成 `false` 即可
- *  - 或在 GraphPage 启动时拉 /api/health 判断
+ * T7 step 5+ :T4 已完成,默认 useMock=false 走真实 fetch。
+ *  - vitest/jsdom 环境无 fetch handler → test-setup.ts 把 useMock 切回 true
+ *  - e2e 走 vite dev + page.route 拦截真实 fetch(后端由 playwright webServer 启)
  */
 
 const BASE = "/api";
 
-/** T4 完成前默认 true;T4 完成时改为 false */
-const useMock = true;
+/**
+ * useMock 是**运行时可切换**的标志。
+ * 用 getter/setter 让 test-setup.ts 改 _useMock 后,所有 import 此模块的代码
+ * 都通过 useMock.value 访问最新值(ESM live binding)。
+ */
+let _useMock = false;
+export const useMock = {
+  get value(): boolean {
+    return _useMock;
+  },
+  set value(v: boolean) {
+    _useMock = v;
+  },
+};
 
 /** LLM 不可用错误 — 用于 EmptyState 触发 */
 export class LLMUnavailableError extends Error {
@@ -136,7 +148,7 @@ const MOCK_STATS: GraphStats = {
 
 /** 拉取完整知识图谱(T4: GET /api/graph) */
 export function getGraph(): Promise<KnowledgeGraph> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(() => resolve(MOCK_GRAPH), 50)
     );
@@ -146,7 +158,7 @@ export function getGraph(): Promise<KnowledgeGraph> {
 
 /** 拉取单节点详情(T4: GET /api/node/{id})— 当前用 getGraph() 内查 */
 export function getNode(id: string): Promise<KnowledgeGraph["nodes"][number] | null> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(
         () => resolve(MOCK_GRAPH.nodes.find((n) => n.id === id) ?? null),
@@ -161,7 +173,7 @@ export function getNode(id: string): Promise<KnowledgeGraph["nodes"][number] | n
 export function getEdge(
   edgeId: string
 ): Promise<KnowledgeGraph["edges"][number] | null> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(
         () =>
@@ -183,7 +195,7 @@ export function getEdge(
 
 /** 拉取图谱统计 — spec §4.4 partial failure 状态条用(T4: GET /api/graph/stats) */
 export function getGraphStats(): Promise<GraphStats> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(() => resolve(MOCK_STATS), 30)
     );
@@ -193,7 +205,7 @@ export function getGraphStats(): Promise<GraphStats> {
 
 /** 重跑失败节点/边(T4: POST /api/graph/regenerate-failed) */
 export function regenerateFailed(_scope: "all" | "nodes" | "edges" = "all"): Promise<{ job_id: string }> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(() => resolve({ job_id: "mock-job-001" }), 30)
     );
@@ -208,7 +220,7 @@ export function regenerateFailed(_scope: "all" | "nodes" | "edges" = "all"): Pro
 export function explainEdge(
   edgeId: string
 ): Promise<{ explanation: string }> {
-  if (useMock) {
+  if (useMock.value) {
     return new Promise((resolve) =>
       setTimeout(
         () =>

@@ -78,7 +78,7 @@ const INITIAL_GRAPH = {
   ],
 };
 
-const INITIAL_STATS = { total: 5, generated: 4, failed: 1, pending: 0 };
+const INITIAL_STATS = { total: 6, generated: 5, failed: 1, pending: 0 };
 
 const AFTER_RERUN_GRAPH = {
   nodes: [
@@ -92,7 +92,7 @@ const AFTER_RERUN_GRAPH = {
   edges: INITIAL_GRAPH.edges,
 };
 
-const AFTER_RERUN_STATS = { total: 5, generated: 5, failed: 0, pending: 0 };
+const AFTER_RERUN_STATS = { total: 6, generated: 6, failed: 0, pending: 0 };
 
 test.describe("E2E 5/5: partial failure → rerun", () => {
   test("初始 4/5 已生成 + 1 failed,状态条显示失败计数", async ({ page }) => {
@@ -115,10 +115,11 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     await page.goto("/");
     await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
 
-    // 状态条 stats 显示:已生成 4 / 5,失败 1
+    // 状态条 stats 显示:已生成 5 / 6,失败 1 (5 nodes + 1 edge = 6 entities,
+    // 5 generated,1 failed)
     const stats = page.getByTestId("status-bar-stats");
-    await expect(stats).toContainText("4");
     await expect(stats).toContainText("5");
+    await expect(stats).toContainText("6");
     await expect(stats).toContainText("失败");
     await expect(stats).toContainText("1");
   });
@@ -164,13 +165,17 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
   test("点重跑 → POST regenerate-failed(scope=all) → 状态条更新 + 红色边框消失", async ({
     page,
   }) => {
-    let getCount = 0;
+    // React 18 StrictMode 会触发 useEffect 两次(挂载/卸载/挂载),所以
+    // page.route 在第一次 GET 时可能收到多次调用 — 不能用 count 切,
+    // 改用 "POST 触发后" 切换。
+    let hasReran = false;
     let postBody: string | null = null;
 
     await page.route("**/api/graph**", async (route) => {
       const req = route.request();
       if (req.method() === "POST" && req.url().includes("regenerate-failed")) {
         postBody = req.postData();
+        hasReran = true;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -179,19 +184,17 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
         return;
       }
       if (req.method() === "GET") {
-        getCount++;
-        const body =
-          getCount === 1
-            ? {
-                nodes: INITIAL_GRAPH.nodes,
-                edges: INITIAL_GRAPH.edges,
-                stats: INITIAL_STATS,
-              }
-            : {
-                nodes: AFTER_RERUN_GRAPH.nodes,
-                edges: AFTER_RERUN_GRAPH.edges,
-                stats: AFTER_RERUN_STATS,
-              };
+        const body = hasReran
+          ? {
+              nodes: AFTER_RERUN_GRAPH.nodes,
+              edges: AFTER_RERUN_GRAPH.edges,
+              stats: AFTER_RERUN_STATS,
+            }
+          : {
+              nodes: INITIAL_GRAPH.nodes,
+              edges: INITIAL_GRAPH.edges,
+              stats: INITIAL_STATS,
+            };
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -216,8 +219,8 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     await expect(rerunBtn).toHaveText("重跑失败部分");
     await rerunBtn.click();
 
-    // 等待状态条更新:已生成 5 / 5,失败 0
-    await expect(stats).toContainText("5", { timeout: 5_000 });
+    // 等待状态条更新:已生成 6 / 6,失败 0 (5 nodes + 1 edge = 6 entities)
+    await expect(stats).toContainText("6", { timeout: 5_000 });
     // failed=0 时,组件仍然渲染"失败 0"(用 tertiary 色)
     await expect(stats).toContainText("0");
 
