@@ -8,7 +8,14 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
-    // Exclude Playwright e2e — those are run by `npx playwright test`, not vitest.
-    exclude: ["**/node_modules/**", "**/dist/**", "tests/e2e/**"],
+    // include/exclude 相对 vite.config.ts 解析
+    include: ["./src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "./tests/e2e/**",
+      "./tests/**",
+      "**/tests/e2e/**",
+    ],
   },
 });

@@ -58,12 +58,18 @@ export interface GraphPageProps {
 }
 
 export function GraphPage(props: GraphPageProps = {}) {
-  const api = props.api ?? {
-    getGraph,
-    getGraphStats,
-    regenerateFailed,
-    explainEdge: explainEdge as ApiExplainEdgeFn,
-  };
+  // T7 step 5+: 把 api 包成 useMemo,避免每次 render 重建对象导致 useEffect
+  // 依赖变化 → 无限拉取 /api/graph(StrictMode 双调用叠加)。
+  const api = useMemo(
+    () =>
+      props.api ?? {
+        getGraph,
+        getGraphStats,
+        regenerateFailed,
+        explainEdge: explainEdge as ApiExplainEdgeFn,
+      },
+    [props.api]
+  );
 
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
