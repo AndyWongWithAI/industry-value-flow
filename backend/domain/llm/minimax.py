@@ -16,7 +16,7 @@ class MiniMaxProvider(ClaudeProvider):
         self,
         api_key: str,
         default_model: str = "MiniMax-M3",
-        timeout: float = 60.0,
+        timeout: float = 300.0,
         enable_thinking: bool = False,
     ):
         # Skip ClaudeProvider.__init__ — we need a different base_url.
@@ -47,7 +47,7 @@ class MiniMaxProvider(ClaudeProvider):
         # We send it only when explicitly enabled (M2.x has thinking always on).
         payload: dict = {
             "model": model or self.default_model,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "messages": [{"role": "user", "content": prompt}],
         }
         if self.enable_thinking:

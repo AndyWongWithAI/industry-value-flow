@@ -10,21 +10,11 @@ export interface GraphEdgeData extends Record<string, unknown> {
   failed_reason?: string | null;
 }
 
-/** 4 种关系类型颜色 */
-const RELATION_COLORS: Record<RelationType, string> = {
-  provide: "#1A4D8F",   // 支撑 — 企业蓝(主)
-  rely_on: "#C49A4A",   // 依赖 — 金色
-  service: "#5C9E5C",   // 服务 — 草绿
-  consume: "#9B6B9E",   // 消费 — 紫色
-};
+/** v2 收敛(2026-06-25):关系类型简化为单向 supports,使用单一企业蓝。 */
+const RELATION_COLOR = "#1A4D8F";   // 支撑 — 企业蓝(主)
 
-/** 4 种关系类型中文标签 */
-const RELATION_LABELS: Record<RelationType, string> = {
-  provide: "支撑",
-  rely_on: "依赖",
-  service: "服务",
-  consume: "消费",
-};
+/** v2:唯一关系类型 supports 的中文标签 */
+const RELATION_LABEL = "支撑";
 
 /** 失败边颜色(spec §4.4.4) */
 const FAILED_EDGE_COLOR = "#DC2626";
@@ -57,8 +47,8 @@ export function GraphEdge(props: EdgeProps<GraphEdgeData>) {
   });
 
   const isFailed = data?.status === "failed";
-  const color = data ? RELATION_COLORS[data.relation_type] : "#999";
-  const label = data ? RELATION_LABELS[data.relation_type] : "";
+  const color = RELATION_COLOR;
+  const label = RELATION_LABEL;
 
   return (
     <>

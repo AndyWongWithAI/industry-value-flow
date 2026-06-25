@@ -8,7 +8,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 class ClaudeProvider:
     name = "claude"
 
-    def __init__(self, api_key: str, default_model: str = "claude-sonnet-4-5", timeout: float = 60.0):
+    def __init__(self, api_key: str, default_model: str = "claude-sonnet-4-5", timeout: float = 300.0):
         self.api_key = api_key
         self.default_model = default_model
         self.timeout = timeout
@@ -30,7 +30,7 @@ class ClaudeProvider:
         client = await self._get_client()
         payload = {
             "model": model or self.default_model,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "messages": [{"role": "user", "content": prompt}],
         }
         resp = await client.post(ANTHROPIC_API_URL, json=payload)

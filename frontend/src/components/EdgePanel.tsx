@@ -369,4 +369,4 @@ export function EdgePanel({
   );
 }
 
-export { RELATION_LABELS as EDGE_PANEL_RELATION_LABELS };
+export { RELATION_LABEL as EDGE_PANEL_RELATION_LABEL };

@@ -8,7 +8,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         self,
         api_key: str,
         default_model: str = "deepseek-chat",
-        timeout: float = 60.0,
+        timeout: float = 300.0,
     ):
         super().__init__(
             base_url="https://api.deepseek.com/v1",

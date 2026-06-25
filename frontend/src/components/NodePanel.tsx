@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode, KnowledgeGraph, RelationType } from "../types/api";
+import type { GraphEdge, GraphNode, KnowledgeGraph } from "../types/api";
 import { Tooltip } from "./Tooltip";
 
 /**
@@ -14,14 +14,12 @@ import { Tooltip } from "./Tooltip";
  *  - 强度用 ●○○○○ (1-5) 圆点
  *  - 入/出边按"代码 + 中文名"渲染,方向用 → 标识
  *  - 复用 Tooltip 显示 failed_reason(避免硬编码 title 属性)
+ *
+ * v2 收敛(2026-06-25):关系类型简化为单向 supports,中文标签硬编码"支撑"。
  */
 
-const RELATION_LABELS: Record<RelationType, string> = {
-  provide: "支撑",
-  rely_on: "依赖",
-  service: "服务",
-  consume: "消费",
-};
+/** v2:唯一关系类型 supports 的中文标签 */
+const RELATION_LABEL = "支撑";
 
 function renderWeight(weight: number): string {
   const filled = Math.max(0, Math.min(5, Math.round(weight)));
@@ -314,7 +312,7 @@ export function NodePanel({ node, graph, onClose, onEdgeClick }: NodePanelProps)
                   }}
                 >
                   <Tooltip
-                    content={e.explanation || RELATION_LABELS[e.relation_type]}
+                    content={e.explanation || RELATION_LABEL}
                   >
                     <span>
                       <span style={{ fontFamily: "var(--font-mono)" }}>
@@ -389,7 +387,7 @@ export function NodePanel({ node, graph, onClose, onEdgeClick }: NodePanelProps)
                   }}
                 >
                   <Tooltip
-                    content={e.explanation || RELATION_LABELS[e.relation_type]}
+                    content={e.explanation || RELATION_LABEL}
                   >
                     <span>
                       {node.id} →{" "}
@@ -410,4 +408,4 @@ export function NodePanel({ node, graph, onClose, onEdgeClick }: NodePanelProps)
 }
 
 // Export helpers for test convenience
-export { renderWeight, RELATION_LABELS as NODE_PANEL_RELATION_LABELS };
+export { renderWeight, RELATION_LABEL as NODE_PANEL_RELATION_LABEL };

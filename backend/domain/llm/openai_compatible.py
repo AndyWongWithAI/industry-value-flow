@@ -14,7 +14,7 @@ class OpenAICompatibleProvider:
         api_key: str,
         default_model: str,
         extra_headers: dict | None = None,
-        timeout: float = 60.0,
+        timeout: float = 300.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -40,6 +40,7 @@ class OpenAICompatibleProvider:
         client = await self._get_client()
         payload = {
             "model": model or self.default_model,
+            "max_tokens": 16384,  # v2:从默认(~4k)提到 16k,支持 96 节点生成
             "messages": [{"role": "user", "content": prompt}],
         }
         resp = await client.post("/chat/completions", json=payload)

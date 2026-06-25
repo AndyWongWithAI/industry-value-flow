@@ -9,7 +9,7 @@ class OllamaProvider(OpenAICompatibleProvider):
         base_url: str = "http://localhost:11434/v1",
         api_key: str = "ollama",
         default_model: str = "llama3",
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ):
         super().__init__(
             base_url=base_url,
