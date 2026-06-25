@@ -70,7 +70,7 @@ const MOCK_GRAPH: KnowledgeGraph = {
     {
       source: "B06",
       target: "D44",
-      relation_type: "provide",
+      relation_type: "supports",
       weight: 4,
       explanation: "煤炭是火力发电的主要燃料",
       status: "generated",
@@ -80,7 +80,7 @@ const MOCK_GRAPH: KnowledgeGraph = {
     {
       source: "D44",
       target: "C17",
-      relation_type: "service",
+      relation_type: "supports",
       weight: 3,
       explanation: "纺织业生产高度依赖电力供应",
       status: "generated",

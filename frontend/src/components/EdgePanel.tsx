@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode, RelationType } from "../types/api";
+import type { GraphEdge, GraphNode } from "../types/api";
 import { renderWeight } from "./NodePanel";
 
 /**
@@ -12,14 +12,12 @@ import { renderWeight } from "./NodePanel";
  *  - 不在面板里跑 LLM,只触发回调,由 GraphPage 决定怎么请求
  *  - 解释正在生成时:状态条显示⟳(琥珀色),不阻塞操作
  *  - 解释失败时:显示 failed_reason 区域,沿用 NodePanel 视觉规范
+ *
+ * v2 收敛(2026-06-25):关系类型简化为单向 supports,中文标签硬编码"支撑"。
  */
 
-const RELATION_LABELS: Record<RelationType, string> = {
-  provide: "支撑",
-  rely_on: "依赖",
-  service: "服务",
-  consume: "消费",
-};
+/** v2:唯一关系类型 supports 的中文标签 */
+const RELATION_LABEL = "支撑";
 
 export interface EdgePanelProps {
   edge: GraphEdge;
@@ -38,7 +36,7 @@ export function EdgePanel({
   onReExplain,
   reExplaining,
 }: EdgePanelProps) {
-  const relationLabel = RELATION_LABELS[edge.relation_type];
+  const relationLabel = RELATION_LABEL;
   const isGenerating = edge.status === "pending";
   const isFailed = edge.status === "failed";
 

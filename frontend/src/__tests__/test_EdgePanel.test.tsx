@@ -31,7 +31,7 @@ const targetNode: GraphNode = {
 const baseEdge: GraphEdge = {
   source: "B06",
   target: "D44",
-  relation_type: "provide",
+  relation_type: "supports",
   weight: 4,
   explanation: "煤炭是火力发电的主要燃料",
   status: "generated",
