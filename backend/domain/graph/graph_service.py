@@ -857,20 +857,6 @@ def _parse_json_strict(text: str) -> dict:
     return json.loads(text)
 
 
-def _build_default_edge_pairs(node_ids: list[str]) -> list[tuple[str, str]]:
-    """T3 MVP 时代的硬编码 edge_pairs 截断(已废弃).
-
-    v4 (2026-06-25):边生成改走 `_generate_edges_by_category` —
-    每个 source 大类调一次 LLM,LLM 决定每个节点的邻接关系。
-    此函数保留仅为旧测试兼容性,新代码不要再用。
-    """
-    pairs: list[tuple[str, str]] = []
-    for i in range(len(node_ids)):
-        for j in range(i + 1, len(node_ids)):
-            pairs.append((node_ids[i], node_ids[j]))
-    return pairs[:12]
-
-
 def _build_edge_category_prompt(
     cat: str, cat_name: str, cat_nodes: list[GraphNode]
 ) -> str:

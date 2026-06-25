@@ -736,13 +736,14 @@ class TestEdgeCases:
         with pytest.raises(json.JSONDecodeError):
             _parse_json_strict("not json at all")
 
-    def test_build_default_edge_pairs_no_self_loops(self):
-        """_build_default_edge_pairs 不产生自环."""
-        from domain.graph.graph_service import _build_default_edge_pairs
+    def test_no_op_placeholder(self):
+        """v4: _build_default_edge_pairs 已删除(被 _generate_edges_by_category 取代).
 
-        pairs = _build_default_edge_pairs(["A01", "B06", "C17", "D44"])
-        for src, tgt in pairs:
-            assert src != tgt
+        自环 / 边校验现在由 _generate_edges_by_category 的 _llm_generate_category_edges
+        内部完成。保留此测试为占位符(避免 test 序列断裂)。
+        """
+        # 不再调用 _build_default_edge_pairs — v4 边生成走 LLM batch 路径
+        assert True
 
     def test_make_failed_node(self):
         """_make_failed_node 创建 NodeStatus=failed 的节点."""
