@@ -193,3 +193,20 @@ docs/
 - 关系人工校验流程
 - 导出图片 / PDF(留 backlog)
 - 多进程 / 多用户并发(本地单人)
+
+## Deployment
+
+生产环境部署在 **https://industry.intelab.cn/**。
+
+- **部署方式**:GitHub Actions → SSH → Docker Compose
+- **触发**:`push origin master` 后 CI(backend pytest + frontend vitest + Playwright e2e)全绿 → `workflow_run` 自动触发 deploy
+- **服务器**:#1 华为云 ECS `124.71.219.208`,目录 `/opt/services/industry-value-flow/`
+- **架构**:backend(FastAPI + uvicorn)+ frontend(nginx serve dist + 反代 /api),端口 `127.0.0.1:8081` → 公网 HTTPS
+
+详见 [docs/deploy/ivf-deploy-guide.md](docs/deploy/ivf-deploy-guide.md)。
+
+一次性准备(用户手动):
+1. 阿里云 DNS 加 A 记录 `industry.intelab.cn` → `124.71.219.208`
+2. GH Actions secrets:`DEPLOY_HOST` + `DEPLOY_SSH_KEY`
+3. SSH 到 `#1` 初始化部署目录 + nginx 公网反代 + certbot 签 SSL
+4. 打开 `https://industry.intelab.cn/settings` 填 LLM API Key
