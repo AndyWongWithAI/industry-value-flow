@@ -133,7 +133,7 @@ class TestInitCacheHit:
             generated_at=datetime(2026, 6, 25),
             llm_config_hash=service._compute_config_hash(),
         )
-        cache_key = f"graph:v1:{service._compute_config_hash()}"
+        cache_key = f"graph:v2:{service._compute_config_hash()}"
         cache.set(
             cache_key,
             cached_graph.model_dump(mode="json"),
@@ -184,7 +184,7 @@ class TestInitCacheMiss:
         # LLM 被调了 >= node 数量
         assert llm_client.generate.call_count >= len(service.node_codes)
         # cache 写了
-        cache_key = f"graph:v1:{service._compute_config_hash()}"
+        cache_key = f"graph:v2:{service._compute_config_hash()}"
         assert cache.get(cache_key) is not None
 
 
@@ -209,7 +209,7 @@ class TestInitLLMUnavailable:
             await service.init_or_load_graph()
 
         # cache 没写
-        cache_key = f"graph:v1:{service._compute_config_hash()}"
+        cache_key = f"graph:v2:{service._compute_config_hash()}"
         assert cache.get(cache_key) is None
 
 
@@ -570,7 +570,7 @@ class TestEdgeCases:
     ):
         """缓存内容损坏(不是合法 KnowledgeGraph) -> 重新生成,不抛异常."""
 
-        cache_key = f"graph:v1:{service._compute_config_hash()}"
+        cache_key = f"graph:v2:{service._compute_config_hash()}"
         cache.set(cache_key, {"garbage": "data"}, ttl_seconds=7 * 24 * 3600)
 
         async def fake_generate(prompt: str) -> str:
@@ -692,7 +692,7 @@ class TestEdgeCases:
             await service.init_or_load_graph()
 
         # cache 没写
-        cache_key = f"graph:v1:{service._compute_config_hash()}"
+        cache_key = f"graph:v2:{service._compute_config_hash()}"
         assert service.cache.get(cache_key) is None
 
     def test_parse_json_strip_markdown_fence(self):

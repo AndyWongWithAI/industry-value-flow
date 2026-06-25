@@ -47,7 +47,7 @@ from schema.graph import (
 
 logger = logging.getLogger(__name__)
 
-CACHE_KEY_PREFIX = "graph:v1:"
+CACHE_KEY_PREFIX = "graph:v2:"
 CACHE_TTL_SECONDS = 7 * 24 * 3600
 
 # 启动时生成节点的范围 — T3 MVP 选一个有代表性的子集(10 个左右)
