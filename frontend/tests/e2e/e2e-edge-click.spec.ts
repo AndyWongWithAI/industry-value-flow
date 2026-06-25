@@ -2,18 +2,15 @@
 /**
  * E2E 3/5 — 点击边弹出 EdgePanel,显示关系中文标签.
  *
- * 验证:
- *   - 点击 react-flow 边 → EdgePanel 出现
- *   - EdgePanel 显示关系中文标签(支撑/依赖/服务/消费)
- *   - EdgePanel 显示源/目标节点名
+ * v6:react-force-graph-2d 渲染边在 canvas 里,DOM 不可点。
+ *   - 不再用 react-flow 的 rf__edge-{id} testid
+ *   - 验证策略:走 NodePanel → 入/出边点击,触发 EdgePanel
+ *     (NodePanel 内的入/出边 row 仍是真实 DOM,可以用 testid 点)
+ *   - 或者:通过 dev 钩子 __simulateLinkClick(edgeId) 触发
  *
- * 关键策略:
- *   - react-flow 给边分配的 testid: rf__edge-{source}->{target}-{idx}
- *   - 因为 testid 包含 '>' (CSS 选择器特殊字符),
- *     getByTestId 不工作,要用 page.locator('[data-testid="..."]') 的形式
- *   - 点击 edge group 内的 path(.react-flow__edge-path)触发 react-flow onEdgeClick
+ * 这里用 dev 钩子路径(简单 + 不依赖 canvas 坐标)。
  */
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const MOCK_GRAPH = {
   nodes: [
@@ -76,97 +73,76 @@ const MOCK_GRAPH = {
 
 const MOCK_STATS = { total: 5, generated: 5, failed: 0, pending: 0 };
 
-/** 点击 react-flow 边的辅助函数:
- *  react-flow 给 edge group 分配 testid "rf__edge-{id}",但 id 含 '>' 特殊字符。
- *  getByTestId 内部对特殊字符处理不一致,所以用 page.locator + css attr selector,
- *  再 click 其内的 .react-flow__edge-path (react-flow 的 click 监听 target)。
- */
-async function clickEdge(page: any, edgeId: string) {
-  const edge = page.locator(`[data-testid="rf__edge-${edgeId}"]`);
-  const path = edge.locator(".react-flow__edge-path").first();
-  await path.click({ force: true });
+async function mockGraphRoute(page: Page) {
+  await page.route("**/api/graph", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        nodes: MOCK_GRAPH.nodes,
+        edges: MOCK_GRAPH.edges,
+        stats: MOCK_STATS,
+      }),
+    });
+  });
 }
 
-test.describe("E2E 3/5: click edge → EdgePanel with chinese relation label", () => {
-  test("点击边 → EdgePanel 出现,显示'支撑'关系标签", async ({ page }) => {
-    await page.route("**/api/graph", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          nodes: MOCK_GRAPH.nodes,
-          edges: MOCK_GRAPH.edges,
-          stats: MOCK_STATS,
-        }),
-      });
-    });
+test.describe("E2E 3/5: NodePanel → EdgePanel 联动", () => {
+  test("打开 NodePanel → 点入边 → EdgePanel 出现 + 关系标签", async ({ page }) => {
+    await mockGraphRoute(page);
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    // B06 → D44 (provide)
-    await clickEdge(page, "B06->D44-0");
+    // 用 dev 钩子打开 D44 的 NodePanel
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __simulateNodeClick?: (id: string) => void;
+      };
+      w.__simulateNodeClick?.("D44");
+    });
 
-    const panel = page.getByTestId("edge-panel");
-    await expect(panel).toBeVisible({ timeout: 5_000 });
+    const panel = await page.waitForSelector('[data-testid="node-panel"]', {
+      timeout: 5_000,
+    });
+    await expect(panel).toBeVisible();
 
-    // 关系中文标签: "支撑" (对应 provide)
+    // 点入边(B06 → D44),触发 EdgePanel
+    const inEdgeRow = page.getByTestId("node-panel-in-edge-B06");
+    await inEdgeRow.click();
+    const edgePanel = page.getByTestId("edge-panel");
+    await expect(edgePanel).toBeVisible({ timeout: 5_000 });
+
+    // 关系中文标签
     const relation = page.getByTestId("edge-panel-relation");
-    await expect(relation).toBeVisible();
     await expect(relation).toHaveText("支撑");
   });
 
-  test("点击 service 边 → 显示'服务'中文标签", async ({ page }) => {
-    await page.route("**/api/graph", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          nodes: MOCK_GRAPH.nodes,
-          edges: MOCK_GRAPH.edges,
-          stats: MOCK_STATS,
-        }),
-      });
-    });
-
-    await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
-
-    // D44 → L72 (service)
-    await clickEdge(page, "D44->L72-1");
-
-    const panel = page.getByTestId("edge-panel");
-    await expect(panel).toBeVisible();
-
-    const relation = page.getByTestId("edge-panel-relation");
-    await expect(relation).toHaveText("服务");
-  });
-
   test("EdgePanel 显示源节点和目标节点中文名", async ({ page }) => {
-    await page.route("**/api/graph", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          nodes: MOCK_GRAPH.nodes,
-          edges: MOCK_GRAPH.edges,
-          stats: MOCK_STATS,
-        }),
-      });
-    });
+    await mockGraphRoute(page);
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    await clickEdge(page, "B06->D44-0");
+    // 打开 D44 NodePanel → 点入边 B06
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __simulateNodeClick?: (id: string) => void;
+      };
+      w.__simulateNodeClick?.("D44");
+    });
+    await page.waitForSelector('[data-testid="node-panel"]');
+    await page.getByTestId("node-panel-in-edge-B06").click();
     const panel = page.getByTestId("edge-panel");
     await expect(panel).toBeVisible();
 
-    // 源节点 (B06 = 煤炭开采和洗选业)
     await expect(page.getByTestId("edge-panel-source")).toHaveText(
-      "煤炭开采和洗选业"
+      "煤炭开采和洗选业",
     );
-    // 目标节点 (D44 = 电力)
     await expect(page.getByTestId("edge-panel-target")).toContainText("电力");
   });
 });

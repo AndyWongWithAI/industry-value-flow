@@ -2,16 +2,15 @@
 /**
  * E2E 5/5 — 部分失败场景 + 重跑流程.
  *
- * 验证:
- *   - 初始:3 generated + 2 failed + 1 edge,状态条 "已生成 4 / 5, 失败 1"
- *   - 失败节点红色边框(GraphNode FAILED_BORDER_COLOR = #DC2626)
- *   - 点"重跑失败部分" → POST /api/graph/regenerate-failed body={scope:"all"}
- *   - 重跑后:状态条 "已生成 5 / 5, 失败 0",红色边框消失
+ * v6 适配:
+ *   - 失败节点不再用 DOM border 表达(react-force-graph 渲染在 canvas),
+ *     而是用 NodePanel 顶部红色失败条 + status-bar "失败 X" 计数
+ *   - 验证:status bar 显示 失败 1 → 点重跑 → status bar 显示 失败 0
+ *   - 失败节点打开 NodePanel,显示红色 banner
  *
  * 关键策略:
- *   - 第一次 page.route /api/graph 返回 4 generated + 1 failed
- *   - 第二次(POST regenerate-failed 后)返回 5 generated + 0 failed
- *   - 用 page.route 不同 method 区分 GET / POST
+ *   - 第一次 GET /api/graph 返回 INITIAL(1 failed)
+ *   - POST regenerate-failed 后,GET 返回 AFTER_RERUN(0 failed)
  */
 import { test, expect } from "@playwright/test";
 
@@ -95,7 +94,7 @@ const AFTER_RERUN_GRAPH = {
 const AFTER_RERUN_STATS = { total: 6, generated: 6, failed: 0, pending: 0 };
 
 test.describe("E2E 5/5: partial failure → rerun", () => {
-  test("初始 4/5 已生成 + 1 failed,状态条显示失败计数", async ({ page }) => {
+  test("初始 5/6 已生成 + 1 failed,状态条显示失败计数", async ({ page }) => {
     await page.route("**/api/graph", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -113,10 +112,11 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     });
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    // 状态条 stats 显示:已生成 5 / 6,失败 1 (5 nodes + 1 edge = 6 entities,
-    // 5 generated,1 failed)
+    // 状态条 stats 显示:已生成 5 / 6,失败 1
     const stats = page.getByTestId("status-bar-stats");
     await expect(stats).toContainText("5");
     await expect(stats).toContainText("6");
@@ -124,7 +124,7 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     await expect(stats).toContainText("1");
   });
 
-  test("失败节点用红色边框", async ({ page }) => {
+  test("点击失败节点 → NodePanel 顶部出现红色失败条", async ({ page }) => {
     await page.route("**/api/graph", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -142,32 +142,28 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     });
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    // L72 是 failed 节点
-    const failedNode = page.locator('[data-testid="graph-node-商务服务业"]');
-    await expect(failedNode).toBeVisible({ timeout: 5_000 });
-    const borderColor = await failedNode.evaluate(
-      (el) => getComputedStyle(el).borderTopColor
-    );
-    // FAILED_BORDER_COLOR = #DC2626 → rgb(220, 38, 38)
-    expect(borderColor).toBe("rgb(220, 38, 38)");
+    // 用 dev 钩子打开失败节点 L72 的 NodePanel
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __simulateNodeClick?: (id: string) => void;
+      };
+      w.__simulateNodeClick?.("L72");
+    });
 
-    // 生成成功节点(B06)用蓝色边框,不是红色
-    const okNode = page.locator('[data-testid="graph-node-煤炭开采和洗选业"]');
-    await expect(okNode).toBeVisible();
-    const okBorderColor = await okNode.evaluate(
-      (el) => getComputedStyle(el).borderTopColor
-    );
-    expect(okBorderColor).not.toBe("rgb(220, 38, 38)");
+    const panel = page.getByTestId("node-panel");
+    await expect(panel).toBeVisible({ timeout: 5_000 });
+    const banner = page.getByTestId("node-panel-failed-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("未生成");
   });
 
-  test("点重跑 → POST regenerate-failed(scope=all) → 状态条更新 + 红色边框消失", async ({
+  test("点重跑 → POST regenerate-failed(scope=all) → 状态条更新", async ({
     page,
   }) => {
-    // React 18 StrictMode 会触发 useEffect 两次(挂载/卸载/挂载),所以
-    // page.route 在第一次 GET 时可能收到多次调用 — 不能用 count 切,
-    // 改用 "POST 触发后" 切换。
     let hasReran = false;
     let postBody: string | null = null;
 
@@ -206,7 +202,9 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     });
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
     // 验证初始:状态条显示失败 1
     const stats = page.getByTestId("status-bar-stats");
@@ -219,22 +217,13 @@ test.describe("E2E 5/5: partial failure → rerun", () => {
     await expect(rerunBtn).toHaveText("重跑失败部分");
     await rerunBtn.click();
 
-    // 等待状态条更新:已生成 6 / 6,失败 0 (5 nodes + 1 edge = 6 entities)
+    // 等待状态条更新:已生成 6 / 6,失败 0
     await expect(stats).toContainText("6", { timeout: 5_000 });
-    // failed=0 时,组件仍然渲染"失败 0"(用 tertiary 色)
     await expect(stats).toContainText("0");
 
     // POST body 应是 {scope:"all"}
     expect(postBody).toBeTruthy();
     const parsed = JSON.parse(postBody!);
     expect(parsed.scope).toBe("all");
-
-    // 失败节点(L72)的红色边框应消失
-    const failedNode = page.locator('[data-testid="graph-node-商务服务业"]');
-    await expect(failedNode).toBeVisible();
-    const borderColor = await failedNode.evaluate(
-      (el) => getComputedStyle(el).borderTopColor
-    );
-    expect(borderColor).not.toBe("rgb(220, 38, 38)");
   });
 });

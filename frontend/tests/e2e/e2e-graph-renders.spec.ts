@@ -2,12 +2,12 @@
 /**
  * E2E 1/5 — 知识图谱渲染基本链路.
  *
- * 验证:用户访问 / → react-flow 画布加载 → 至少看到 1 个节点.
- *
- * 关键策略:
- *   - 用 page.route 拦截 GET /api/graph,返回 mock graph
- *   - 验证 page.locator('[data-testid^="graph-node-"]') 至少 1 个
- *   - 验证 react-flow 的 .react-flow 容器出现
+ * v6:react-flow → react-force-graph-2d
+ *   - react-force-graph-2d 用 <canvas> 渲染,没有 .react-flow 容器
+ *   - 也没有 [data-testid="graph-node-{label}"] DOM 节点
+ *   - 验证策略:canvas 出现 + data-testid="graph-view" 容器出现
+ *   - 不依赖具体节点位置(物理 simulation 随机)
+ *   - 节点 hover 由 react-force-graph 自带 nodeLabel 控制
  */
 import { test, expect } from "@playwright/test";
 
@@ -61,9 +61,8 @@ const MOCK_GRAPH = {
 
 const MOCK_STATS = { total: 4, generated: 4, failed: 0, pending: 0 };
 
-test.describe("E2E 1/5: graph renders with at least one node", () => {
-  test("访问 / → react-flow 加载 → 至少 1 个节点出现", async ({ page }) => {
-    // 拦截 /api/graph 返回 mock
+test.describe("E2E 1/5: graph renders with canvas", () => {
+  test("访问 / → ForceGraph canvas 加载 → graph-view 容器出现", async ({ page }) => {
     await page.route("**/api/graph", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -82,20 +81,29 @@ test.describe("E2E 1/5: graph renders with at least one node", () => {
 
     await page.goto("/");
 
-    // react-flow 容器
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    // ForceGraph 容器(来自 ForceGraph.tsx 包装 div)
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    // 至少 1 个 graph-node-{label}
-    const nodes = page.locator('[data-testid^="graph-node-"]');
-    await expect(nodes.first()).toBeVisible({ timeout: 5_000 });
-    const count = await nodes.count();
-    expect(count).toBeGreaterThanOrEqual(1);
+    // canvas 元素出现(react-force-graph-2d 渲染)
+    const canvas = page.locator('[data-testid="graph-view"] canvas');
+    await expect(canvas).toBeVisible({ timeout: 5_000 });
+    // canvas 应有非零大小
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    if (box) {
+      expect(box.width).toBeGreaterThan(0);
+      expect(box.height).toBeGreaterThan(0);
+    }
 
     // 状态条出现
     await expect(page.getByTestId("status-bar")).toBeVisible();
   });
 
-  test("Mock 至少 3 个节点都能渲染出来", async ({ page }) => {
+  test("无 graph-node-{label} DOM 节点(canvas 渲染,验证 v6 行为)", async ({
+    page,
+  }) => {
     await page.route("**/api/graph", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
@@ -113,17 +121,13 @@ test.describe("E2E 1/5: graph renders with at least one node", () => {
     });
 
     await page.goto("/");
-    await expect(page.locator(".react-flow")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="graph-view"]')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    // 三个节点都应该出现
-    await expect(
-      page.locator('[data-testid="graph-node-煤炭开采和洗选业"]')
-    ).toBeVisible({ timeout: 5_000 });
-    await expect(
-      page.locator('[data-testid="graph-node-电力、热力生产和供应业"]')
-    ).toBeVisible();
-    await expect(
-      page.locator('[data-testid="graph-node-纺织业"]')
-    ).toBeVisible();
+    // v6 没有 graph-node-{label} DOM 节点 — 这是关键 contract。
+    // 节点渲染完全在 canvas 里,无法用 DOM selector 拿。
+    const domNodes = page.locator('[data-testid^="graph-node-"]');
+    expect(await domNodes.count()).toBe(0);
   });
 });
