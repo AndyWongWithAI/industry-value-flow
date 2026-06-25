@@ -1,0 +1,50 @@
+# .dockerignore — 排除构建上下文不需要的文件
+# 影响:Dockerfile build context(root 和 frontend/)
+#
+# 根目录 docker-compose.yml 用 context: . 时,排除 .git / tests / docs / data 等
+# frontend/Dockerfile 用 context: ./frontend 时,排除 frontend/tests 等
+
+# Git
+.git
+.gitignore
+.dockerignore
+.github
+
+# Python 构建产物
+__pycache__
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv
+.coverage
+
+# Node 构建产物
+node_modules
+dist
+.vite
+coverage
+playwright-report
+playwright/.cache
+test-results
+
+# 测试文件 / e2e(不进镜像)
+backend/tests
+frontend/tests
+frontend/coverage
+frontend/playwright.config.ts
+frontend/playwright-report
+
+# 数据 / 配置 / 文档(不进镜像)
+data
+.config
+docs
+.sdd
+.superpowers
+test-results
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 后端不要带 frontend(防 setuptools auto-discovery 误识别)
+# (其实根 Dockerfile 用 context:. 时会带上,见 backend/Dockerfile 注释)

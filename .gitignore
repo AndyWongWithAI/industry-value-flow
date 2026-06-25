@@ -15,6 +15,9 @@ dist/
 # Settings (含 API key)
 .config/
 
+# Bind mount 数据(SQLite + settings.json)— 不要进 git,#1 上由容器 bind mount
+data/
+
 # OS
 .DS_Store
 

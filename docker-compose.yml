@@ -1,0 +1,102 @@
+# docker-compose.yml — industry-value-flow 生产编排
+# 部署位置:#1 /opt/services/industry-value-flow/docker-compose.yml
+# 启动:docker compose up -d --build
+# 查看日志:docker compose logs -f backend(或 frontend)
+#
+# 设计:
+#   - backend 容器不直接暴露端口(只 frontend 容器能访问,跨容器走服务名 "backend")
+#   - frontend 容器 :80 → #1 nginx 反代(:8081 之类的端口,见 docs/deploy/ivf-deploy-guide.md)
+#   - 数据持久化:./data/db(SQLite)+ ./data/config(settings.json)
+#   - 资源限制参考 arch-platform(轻量 FastAPI)
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: industry-value-flow-backend:0.1.0
+    container_name: ivf-backend
+    restart: unless-stopped
+
+    # 不暴露端口 — 跨容器走服务名;只有 frontend 容器能访问 backend:8000
+    expose:
+      - "8000"
+
+    # 持久化(SQLite + settings.json)
+    # 配置 / 数据库都按 IVF_CONFIG_DIR=/app/data/config 解析(config.py 路径约定)
+    volumes:
+      - ./data/db:/app/data/db          # cache.db
+      - ./data/config:/app/data/config  # settings.json
+
+    # 环境变量
+    environment:
+      IVF_CONFIG_DIR: /app/data/config
+      PYTHONUNBUFFERED: "1"
+      # LLM API Key 不要进镜像;首次部署后用户手动写到 data/config/settings.json
+      # (前端 /api/settings 页保存即可,见 README "LLM 配置" 章节)
+
+    # 资源限制(轻量 FastAPI + SQLite)
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    # 日志轮转
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: industry-value-flow-frontend:0.1.0
+    container_name: ivf-frontend
+    restart: unless-stopped
+
+    # 端口绑定到 #1 127.0.0.1:8081(只有 #1 nginx 能访问,不直接对外)
+    # 公网入口走 #1 /etc/nginx/sites-available/industry.intelab.cn → 127.0.0.1:8081
+    # 不要绑 0.0.0.0:80,#1 nginx 自身已占 80
+    ports:
+      - "127.0.0.1:8081:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+    # 日志轮转
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
