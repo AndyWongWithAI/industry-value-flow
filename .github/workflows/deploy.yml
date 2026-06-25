@@ -43,7 +43,7 @@ jobs:
       deploy_path: "/opt/services/industry-value-flow"
       compose_file: "docker-compose.yml"
       healthcheck_url: "http://127.0.0.1:8081/api/settings/llm"
-      arch_component: "industry-value-flow"
+      arch_component: "industry-value-flow-platform"
       arch_platform_url: "https://arch.intelab.cn"
       git_ref: "master"
     secrets:
