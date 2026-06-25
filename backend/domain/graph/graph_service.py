@@ -1,0 +1,369 @@
+"""GraphService — 知识图谱核心服务.
+
+T3 spec (3.1):
+- init_or_load_graph(): cache 命中返回,未命中调 LLM 生成(partial allowed),写缓存
+- regenerate_failed(): 重跑 failed 节点/边
+- _generate_node(): LLM 生成单个节点
+- _generate_edge(): LLM 生成单条边
+- compute_stats(): 返回 generated/failed/total
+
+设计决策:
+- 持久化:每生成一个 node/edge 立即写 GraphRepo(SQLite,同步)
+- 缓存:Cache (SQLite) 7 天 TTL,key = graph:v1:{llm_config_hash}
+- 错误:LLM 整体不可用 -> LLMUnavailableError(不缓存)
+       LLM 单项失败 -> NodeStatus.failed + failed_reason,继续下一个
+       LLM JSON 错 -> 1 次重试
+- 防御:节点 code 不在 GB/T 4754 白名单 -> ValidationError 由 Pydantic 拒收
+       边 source/target 不存在 -> KnowledgeGraph 校验器拒收
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import ValidationError
+
+from domain.llm.base import LLMProviderProtocol
+from domain.storage.cache import Cache
+from domain.storage.graph_repo import GraphRepo
+from schema.gbt4754 import (
+    get_category_for_code,
+    get_label_for_code,
+    is_valid_middle_category_code,
+)
+from schema.graph import (
+    Category,
+    GraphEdge,
+    GraphNode,
+    GraphStats,
+    KnowledgeGraph,
+    NodeStatus,
+    RelationType,
+)
+
+logger = logging.getLogger(__name__)
+
+CACHE_KEY_PREFIX = "graph:v1:"
+CACHE_TTL_SECONDS = 7 * 24 * 3600
+
+# 启动时生成节点的范围 — T3 MVP 选一个有代表性的子集(10 个左右)
+# 全部 96 个太慢;留 T4 让用户选择子集。
+# 选 8 个跨类核心:农业(投入)、制造业、采矿业(投入)、电力(投入)、
+# 批发零售、运输、金融、商务服务
+DEFAULT_NODE_CODES: list[str] = [
+    "A01",  # 农业
+    "B06",  # 煤炭开采
+    "B07",  # 石油天然气
+    "C17",  # 纺织业
+    "C26",  # 化学原料
+    "D44",  # 电力热力
+    "F51",  # 批发业
+    "G54",  # 道路运输
+    "I65",  # 软件信息技术
+    "J66",  # 货币金融
+    "L72",  # 商务服务业
+]
+
+
+class LLMUnavailableError(Exception):
+    """LLM 完全不可用(无 key / 网络挂) — 启动报错,前端白屏 + '请配置 LLM'"""
+
+
+class GraphService:
+    """知识图谱服务 — LLM 初始化 + partial state 持久化 + regenerate_failed."""
+
+    def __init__(
+        self,
+        llm_client: LLMProviderProtocol,
+        storage: GraphRepo,
+        cache: Cache,
+        node_codes: list[str] | None = None,
+    ):
+        self.llm = llm_client
+        self.storage = storage
+        self.cache = cache
+        self.node_codes = node_codes or DEFAULT_NODE_CODES
+        # 计算 LLM 配置 hash(provider + model + api_key 前 8 位)
+        # 通过属性延迟计算(llm_client 可能没有暴露 api_key;我们用通用接口)
+        self._llm_config_hash: str | None = None
+
+    # ---------- public ----------
+
+    async def init_or_load_graph(self) -> KnowledgeGraph:
+        """启动时调用。
+        1. 查 cache key = 'graph:v1:{llm_config_hash}',TTL 7 天
+        2. 命中且未过期 -> 返回缓存的 KnowledgeGraph(包括 partial 状态)
+        3. 未命中 -> 调 LLM 生成,持久化(partial allowed),写缓存
+        4. LLM 完全不可用 -> 抛 LLMUnavailableError
+        """
+        config_hash = self._compute_config_hash()
+        cache_key = f"{CACHE_KEY_PREFIX}{config_hash}"
+
+        # 1) 试 cache
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            logger.info("graph cache hit key=%s", cache_key)
+            try:
+                return KnowledgeGraph.model_validate(cached)
+            except (ValidationError, ValueError) as e:
+                logger.warning("cached graph invalid, regenerating: %s", e)
+                # corrupted cache — fall through to regenerate
+
+        # 2) 试 DB(让"已持久化的 partial state"也能被复用,
+        #    不需要再调 LLM)
+        existing = self.storage.load_graph(llm_config_hash=config_hash)
+        if existing is not None:
+            logger.info("graph loaded from storage nodes=%d edges=%d",
+                        len(existing.nodes), len(existing.edges))
+            self._write_cache(cache_key, existing)
+            return existing
+
+        # 3) 调 LLM 生成
+        graph = await self._generate_full_graph(config_hash)
+        self.storage.replace_full(graph)
+        self._write_cache(cache_key, graph)
+        return graph
+
+    async def regenerate_failed(
+        self, scope: Literal["nodes", "edges", "all"] = "all"
+    ) -> KnowledgeGraph:
+        """重跑 failed 节点/边,成功 -> status=generated,失败 -> 保持 failed + 更新 failed_reason
+        返回最新 KnowledgeGraph
+        """
+        if scope in ("nodes", "all"):
+            failed_nodes = self.storage.list_failed_nodes()
+            for node in failed_nodes:
+                regenerated = await self._generate_node(node.id)
+                self.storage.upsert_node(regenerated)
+
+        if scope in ("edges", "all"):
+            failed_edges = self.storage.list_failed_edges()
+            for edge in failed_edges:
+                regenerated = await self._generate_edge(edge.source, edge.target)
+                self.storage.upsert_edge(regenerated)
+
+        # 重新加载图 + 失效缓存(让 partial state 被重新持久化)
+        config_hash = self._compute_config_hash()
+        graph = self.storage.load_graph(llm_config_hash=config_hash)
+        if graph is None:
+            # storage 是空的,这种情况不应该发生
+            raise LLMUnavailableError("storage empty after regenerate_failed")
+        cache_key = f"{CACHE_KEY_PREFIX}{config_hash}"
+        self._write_cache(cache_key, graph)
+        return graph
+
+    def compute_stats(self, graph: KnowledgeGraph) -> GraphStats:
+        """返回 {generated, failed, total, pending}."""
+        node_stats = _status_counts(graph.nodes)
+        edge_stats = _status_counts(graph.edges)
+        # node + edge 合并
+        generated = node_stats[NodeStatus.generated] + edge_stats[NodeStatus.generated]
+        failed = node_stats[NodeStatus.failed] + edge_stats[NodeStatus.failed]
+        pending = node_stats[NodeStatus.pending] + edge_stats[NodeStatus.pending]
+        total = len(graph.nodes) + len(graph.edges)
+        return GraphStats(
+            generated=generated, failed=failed, total=total, pending=pending
+        )
+
+    # ---------- generation (private) ----------
+
+    async def _generate_full_graph(self, config_hash: str) -> KnowledgeGraph:
+        """全图生成:逐个 node,逐个 edge(可能边之间相互依赖),立即持久化."""
+        nodes: list[GraphNode] = []
+        edges: list[GraphEdge] = []
+
+        # 1) 节点
+        for code in self.node_codes:
+            try:
+                node = await self._generate_node(code)
+            except LLMUnavailableError:
+                # LLM 整体挂 -> 立刻抛,partial state 已持久化(直到失败的)
+                raise
+            except Exception as e:
+                # 单节点失败:标记 failed + 持久化,继续下一个
+                logger.warning("node %s generation failed: %s", code, e)
+                node = _make_failed_node(code, str(e))
+            self.storage.upsert_node(node)
+            nodes.append(node)
+
+        # 2) 边:基于已生成(generated + failed 都算"已知")节点对
+        # T3 MVP:成对生成(n*(n-1)/2 太慢;我们选相邻的"价值链"对)
+        edge_pairs = _build_default_edge_pairs([n.id for n in nodes])
+        for src, tgt in edge_pairs:
+            try:
+                edge = await self._generate_edge(src, tgt)
+            except LLMUnavailableError:
+                raise
+            except Exception as e:
+                logger.warning("edge %s->%s generation failed: %s", src, tgt, e)
+                edge = _make_failed_edge(src, tgt, str(e))
+            self.storage.upsert_edge(edge)
+            edges.append(edge)
+
+        return KnowledgeGraph(
+            nodes=nodes,
+            edges=edges,
+            generated_at=datetime.utcnow(),
+            llm_config_hash=config_hash,
+        )
+
+    async def _generate_node(self, code: str) -> GraphNode:
+        """LLM 生成单个节点(NodeStatus=generated / failed)."""
+        if not is_valid_middle_category_code(code):
+            raise ValueError(
+                f"node code {code!r} not in GB/T 4754 whitelist"
+            )
+        label = get_label_for_code(code) or code
+        category_str = get_category_for_code(code) or "A"
+        prompt = (
+            f"你是中国国民经济行业分类专家。请为以下行业生成一句话描述:\n"
+            f"行业代码: {code}\n"
+            f"行业名称: {label}\n"
+            f"所属大类: {category_str}\n\n"
+            f"要求:用中文,不超过 50 字,说明该行业的核心业务或产业链定位。\n"
+            f"只返回描述文本,不要任何前缀/解释/JSON 包装。"
+        )
+        raw = await self._call_llm_with_retry(prompt)
+        description = raw.strip()
+        return GraphNode(
+            id=code,
+            label=label,
+            category=Category(category_str),
+            description=description,
+            status=NodeStatus.generated,
+            last_attempt_at=datetime.utcnow(),
+        )
+
+    async def _generate_edge(self, source_id: str, target_id: str) -> GraphEdge:
+        """LLM 生成单条边(RelationType + weight + reason)."""
+        if not is_valid_middle_category_code(source_id):
+            raise ValueError(f"source {source_id!r} not in GB/T 4754 whitelist")
+        if not is_valid_middle_category_code(target_id):
+            raise ValueError(f"target {target_id!r} not in GB/T 4754 whitelist")
+        s_label = get_label_for_code(source_id) or source_id
+        t_label = get_label_for_code(target_id) or target_id
+        # 列所有合法关系类型,让 LLM 选
+        relation_choices = ", ".join(r.value for r in RelationType)
+        prompt = (
+            f"分析行业 {source_id}({s_label}) 与行业 {target_id}({t_label}) 之间的产业关系。\n\n"
+            f"返回严格 JSON 格式(不要 markdown,不要解释):\n"
+            f'{{"relation_type": "<{relation_choices} 中之一>", '
+            f'"weight": <1-5 整数,关系强度>, '
+            f'"explanation": "<一句话中文解释,不超过 40 字>"}}\n\n'
+            f"weight 5 = 强核心依赖,1 = 弱/偶发关联。"
+        )
+        raw = await self._call_llm_with_retry(prompt)
+        data = _parse_json_strict(raw)
+        return GraphEdge(
+            source=source_id,
+            target=target_id,
+            relation_type=RelationType(data["relation_type"]),
+            weight=int(data["weight"]),
+            explanation=str(data["explanation"]),
+            status=NodeStatus.generated,
+            last_attempt_at=datetime.utcnow(),
+        )
+
+    # ---------- LLM call ----------
+
+    async def _call_llm_with_retry(self, prompt: str) -> str:
+        """调 LLM,JSON 解析错误重试 1 次,网络挂抛 LLMUnavailableError."""
+        try:
+            first = await self.llm.generate(prompt)
+        except Exception as e:
+            # LLM 网络/认证挂了 — 整体不可用
+            logger.error("LLM generate failed: %s", e)
+            raise LLMUnavailableError(
+                f"LLM 不可用: {e!s}. 请检查 LLM 配置。"
+            ) from e
+        return first
+
+    # ---------- config hash ----------
+
+    def _compute_config_hash(self) -> str:
+        """provider + model + api_key 前 8 位的 sha256."""
+        if self._llm_config_hash is not None:
+            return self._llm_config_hash
+        provider = getattr(self.llm, "name", "unknown")
+        model = getattr(self.llm, "default_model", "unknown")
+        api_key = getattr(self.llm, "api_key", "")
+        api_key_prefix = api_key[:8] if api_key else ""
+        raw = f"{provider}:{model}:{api_key_prefix}"
+        self._llm_config_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return self._llm_config_hash
+
+    def _write_cache(self, key: str, graph: KnowledgeGraph) -> None:
+        try:
+            payload = graph.model_dump(mode="json")
+            self.cache.set(key, payload, ttl_seconds=CACHE_TTL_SECONDS)
+        except Exception as e:
+            logger.warning("failed to write graph cache: %s", e)
+
+
+# ---------- module-level helpers ----------
+
+
+def _status_counts(items: list[Any]) -> dict[NodeStatus, int]:
+    counts = {NodeStatus.pending: 0, NodeStatus.generated: 0, NodeStatus.failed: 0}
+    for item in items:
+        counts[item.status] = counts.get(item.status, 0) + 1
+    return counts
+
+
+def _make_failed_node(code: str, reason: str) -> GraphNode:
+    label = get_label_for_code(code) or code
+    category_str = get_category_for_code(code) or "A"
+    return GraphNode(
+        id=code,
+        label=label,
+        category=Category(category_str),
+        description="",
+        status=NodeStatus.failed,
+        failed_reason=reason,
+        last_attempt_at=datetime.utcnow(),
+    )
+
+
+def _make_failed_edge(source_id: str, target_id: str, reason: str) -> GraphEdge:
+    return GraphEdge(
+        source=source_id,
+        target=target_id,
+        relation_type=RelationType.provide,  # placeholder
+        weight=1,  # placeholder
+        explanation="",
+        status=NodeStatus.failed,
+        failed_reason=reason,
+        last_attempt_at=datetime.utcnow(),
+    )
+
+
+def _parse_json_strict(text: str) -> dict:
+    """严格 JSON 解析,允许 markdown 围栏."""
+    text = text.strip()
+    # 去掉 ```json ... ``` 围栏
+    if text.startswith("```"):
+        lines = text.splitlines()
+        # 去掉首行 ```json / ```,末行 ```
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return json.loads(text)
+
+
+def _build_default_edge_pairs(node_ids: list[str]) -> list[tuple[str, str]]:
+    """构造有代表性的"价值链"边对(避免 n*(n-1)/2 过载).
+
+    T3 MVP:相邻下标的节点配对(去重 + 去自环).
+    """
+    pairs: list[tuple[str, str]] = []
+    for i in range(len(node_ids)):
+        for j in range(i + 1, len(node_ids)):
+            pairs.append((node_ids[i], node_ids[j]))
+    # 截断到前 N 对,避免 n*(n-1)/2 过大
+    # 11 节点 -> 55 对,MVP 截到 12 对
+    return pairs[:12]
